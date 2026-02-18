@@ -49,54 +49,93 @@ public class Deck : MonoBehaviour
     public float anglePerCard = 8f;
 
     [Header("─ 애니메이션 설정 ─")]
-    public float animDuration = 0.3f;
     public float dealDelay = 0.1f;
     public Vector3 spawnOffset = new Vector3(0f, -3f, 0f);
+
+    [Header("─ 출렁임 설정 ─")]
+    public float waveAmount = 0.3f;
 
     // ─── 내부 상태 ───
     private readonly List<GameObject> _spawnedCards = new List<GameObject>();
     private List<GameObject> _prefabPool;
     private bool _isAnimating;
     private CardHover _currentHover;
-    private ContactFilter2D _contactFilter = new ContactFilter2D();
-    private readonly List<RaycastHit2D> _hitResults = new List<RaycastHit2D>();
+    private CardHover _draggingCard;
 
     private float CurrentAngleRange =>
         baseAngleRange + Mathf.Max(0, _spawnedCards.Count - drawCount) * anglePerCard;
 
+    private Transform Parent =>
+        deckSpawnPoint != null ? deckSpawnPoint : transform;
+
     void Start()
     {
-        _contactFilter.useTriggers = true;
-        _contactFilter.useLayerMask = false;
         _prefabPool = BuildPrefabPool();
         DrawCards();
     }
 
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.Space) && !_isAnimating)
+        if (Input.GetKeyDown(KeyCode.Space) && !_isAnimating && _draggingCard == null)
             AddOneCard();
 
-        UpdateHover();
+        UpdateHoverAndDrag();
     }
 
     // ─────────────────────────────────────────
-    //  마우스 호버: sortingOrder가 가장 높은 카드만
+    //  호버 + 드래그 처리
     // ─────────────────────────────────────────
-    private void UpdateHover()
+    private void UpdateHoverAndDrag()
     {
         Camera cam = Camera.main;
         if (cam == null) return;
 
-        Vector2 worldPos = cam.ScreenToWorldPoint(Input.mousePosition);
-        int hitCount = Physics2D.Raycast(worldPos, Vector2.zero, _contactFilter, _hitResults, 0f);
+        Vector3 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
+        mouseWorld.z = 0f;
+
+        // 드래그 중
+        if (_draggingCard != null)
+        {
+            Vector3 localPos = Parent.InverseTransformPoint(mouseWorld);
+            _draggingCard.UpdateDrag(localPos);
+
+            // 마우스 놓음
+            if (Input.GetMouseButtonUp(0))
+            {
+                // 슬롯 위인지 확인
+                Slot slot = FindSlotAtPosition(mouseWorld);
+
+                if (slot != null && !slot.HasCard)
+                {
+                    // 카드를 슬롯에 올리고 덱에서 제거
+                    GameObject cardObj = _draggingCard.gameObject;
+                    _spawnedCards.Remove(cardObj);
+                    slot.PlaceCard(cardObj);
+                    UpdateAllCardBases();
+                    TriggerWaveAll(null);
+                }
+                else
+                {
+                    // 슬롯 아님 → 손으로 복귀
+                    _draggingCard.EndDrag();
+                    TriggerWaveAll(_draggingCard);
+                }
+
+                _draggingCard = null;
+                _currentHover = null;
+            }
+            return;
+        }
+
+        // 호버 감지
+        Collider2D[] hits = Physics2D.OverlapPointAll(mouseWorld);
 
         CardHover topHover = null;
         int topOrder = int.MinValue;
 
-        for (int i = 0; i < hitCount; i++)
+        foreach (var hit in hits)
         {
-            var hover = _hitResults[i].collider.GetComponent<CardHover>();
+            var hover = hit.GetComponent<CardHover>();
             if (hover != null && hover.baseSortingOrder > topOrder)
             {
                 topOrder = hover.baseSortingOrder;
@@ -111,6 +150,44 @@ public class Deck : MonoBehaviour
             _currentHover = topHover;
             if (_currentHover != null)
                 _currentHover.Hover();
+        }
+
+        // 클릭 → 드래그 시작
+        if (_currentHover != null && Input.GetMouseButtonDown(0))
+        {
+            _draggingCard = _currentHover;
+            _draggingCard.StartDrag();
+            Vector3 localPos = Parent.InverseTransformPoint(mouseWorld);
+            _draggingCard.UpdateDrag(localPos);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  마우스 위치에서 슬롯 찾기
+    // ─────────────────────────────────────────
+    private Slot FindSlotAtPosition(Vector3 worldPos)
+    {
+        Collider2D[] hits = Physics2D.OverlapPointAll(worldPos);
+        foreach (var hit in hits)
+        {
+            var slot = hit.GetComponent<Slot>();
+            if (slot != null)
+                return slot;
+        }
+        return null;
+    }
+
+    // ─────────────────────────────────────────
+    //  출렁임
+    // ─────────────────────────────────────────
+    private void TriggerWaveAll(CardHover except)
+    {
+        foreach (var card in _spawnedCards)
+        {
+            if (card == null) continue;
+            var hover = card.GetComponent<CardHover>();
+            if (hover != null && hover != except)
+                hover.TriggerWave(waveAmount);
         }
     }
 
@@ -137,8 +214,7 @@ public class Deck : MonoBehaviour
             SpawnCard(prefab);
         }
 
-        UpdateAllCardBases();
-        StartCoroutine(AnimateAllCards());
+        StartCoroutine(DealAnimation());
     }
 
     // ─────────────────────────────────────────
@@ -155,9 +231,7 @@ public class Deck : MonoBehaviour
 
         GameObject prefab = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
         SpawnCard(prefab);
-
         UpdateAllCardBases();
-        StartCoroutine(AnimateAddCard());
     }
 
     // ─────────────────────────────────────────
@@ -168,6 +242,8 @@ public class Deck : MonoBehaviour
     {
         StopAllCoroutines();
         _isAnimating = false;
+        _draggingCard = null;
+        _currentHover = null;
 
         foreach (GameObject card in _spawnedCards)
         {
@@ -185,16 +261,13 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     private GameObject SpawnCard(GameObject prefab)
     {
-        Transform parent = deckSpawnPoint != null ? deckSpawnPoint : transform;
-        GameObject card = Instantiate(prefab, parent);
+        GameObject card = Instantiate(prefab, Parent);
         card.transform.localPosition = spawnOffset;
         card.transform.localRotation = Quaternion.identity;
 
-        // Collider2D 없으면 자동 추가 (마우스 감지용)
         if (card.GetComponent<Collider2D>() == null)
             card.AddComponent<BoxCollider2D>();
 
-        // CardHover 부착
         if (card.GetComponent<CardHover>() == null)
             card.AddComponent<CardHover>();
 
@@ -203,7 +276,28 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  내부: 모든 카드의 base 위치/회전/sortingOrder 갱신
+    //  딜 애니메이션
+    // ─────────────────────────────────────────
+    private IEnumerator DealAnimation()
+    {
+        _isAnimating = true;
+        int count = _spawnedCards.Count;
+
+        for (int i = 0; i < count; i++)
+        {
+            GetArchTarget(i, count, out Vector3 pos, out Quaternion rot);
+            var hover = _spawnedCards[i].GetComponent<CardHover>();
+            if (hover != null)
+                hover.SetBase(pos, rot, i);
+
+            yield return new WaitForSeconds(dealDelay);
+        }
+
+        _isAnimating = false;
+    }
+
+    // ─────────────────────────────────────────
+    //  모든 카드 base 갱신
     // ─────────────────────────────────────────
     private void UpdateAllCardBases()
     {
@@ -220,7 +314,7 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  내부: 아치형 목표 위치 + 회전
+    //  아치형 목표 위치 + 회전
     // ─────────────────────────────────────────
     private void GetArchTarget(int index, int total, out Vector3 pos, out Quaternion rot)
     {
@@ -240,87 +334,7 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  애니메이션: 초기 카드 왼→오 촤르륵 등장
-    // ─────────────────────────────────────────
-    private IEnumerator AnimateAllCards()
-    {
-        _isAnimating = true;
-        int count = _spawnedCards.Count;
-
-        for (int i = 0; i < count; i++)
-        {
-            GetArchTarget(i, count, out Vector3 targetPos, out Quaternion targetRot);
-            StartCoroutine(AnimateCard(_spawnedCards[i], targetPos, targetRot));
-            yield return new WaitForSeconds(dealDelay);
-        }
-
-        yield return new WaitForSeconds(animDuration);
-        RefreshAllHovers();
-        _isAnimating = false;
-    }
-
-    // ─────────────────────────────────────────
-    //  애니메이션: 카드 추가 → 전체 아치 재배치
-    // ─────────────────────────────────────────
-    private IEnumerator AnimateAddCard()
-    {
-        _isAnimating = true;
-        int count = _spawnedCards.Count;
-
-        for (int i = 0; i < count - 1; i++)
-        {
-            GetArchTarget(i, count, out Vector3 pos, out Quaternion rot);
-            StartCoroutine(AnimateCard(_spawnedCards[i], pos, rot));
-        }
-
-        yield return new WaitForSeconds(dealDelay);
-        GetArchTarget(count - 1, count, out Vector3 newPos, out Quaternion newRot);
-        StartCoroutine(AnimateCard(_spawnedCards[count - 1], newPos, newRot));
-
-        yield return new WaitForSeconds(animDuration);
-        RefreshAllHovers();
-        _isAnimating = false;
-    }
-
-    // ─────────────────────────────────────────
-    //  애니메이션: 단일 카드 위치+회전
-    // ─────────────────────────────────────────
-    private IEnumerator AnimateCard(GameObject card, Vector3 targetPos, Quaternion targetRot)
-    {
-        if (card == null) yield break;
-
-        Vector3 fromPos = card.transform.localPosition;
-        Quaternion fromRot = card.transform.localRotation;
-        float elapsed = 0f;
-
-        while (elapsed < animDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / animDuration);
-            float ease = 1f - Mathf.Pow(1f - t, 3f);
-
-            card.transform.localPosition = Vector3.Lerp(fromPos, targetPos, ease);
-            card.transform.localRotation = Quaternion.Slerp(fromRot, targetRot, ease);
-            yield return null;
-        }
-
-        card.transform.localPosition = targetPos;
-        card.transform.localRotation = targetRot;
-    }
-
-    private void RefreshAllHovers()
-    {
-        foreach (var card in _spawnedCards)
-        {
-            if (card == null) continue;
-            var hover = card.GetComponent<CardHover>();
-            if (hover != null)
-                hover.RefreshHover();
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  내부: 유효한 프리팹 풀 수집
+    //  유효한 프리팹 풀 수집
     // ─────────────────────────────────────────
     private List<GameObject> BuildPrefabPool()
     {

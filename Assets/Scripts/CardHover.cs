@@ -1,4 +1,3 @@
-using System.Collections;
 using UnityEngine;
 
 public class CardHover : MonoBehaviour
@@ -7,11 +6,19 @@ public class CardHover : MonoBehaviour
     [HideInInspector] public Quaternion baseLocalRot;
     [HideInInspector] public int baseSortingOrder;
 
-    public float hoverOffset = 0.5f;
-    public float hoverDuration = 0.15f;
+    public float hoverOffset = 1.0f;
+    public float smoothSpeed = 10f;
 
-    private Coroutine _anim;
+    // 상태
     private bool _isHovered;
+    private bool _isDragging;
+    private Vector3 _dragLocalPos;
+
+    // 출렁임
+    private float _waveAmount;
+    private float _waveDecay = 6f;
+    private float _waveFreq = 12f;
+    private float _waveTime;
 
     public void SetBase(Vector3 localPos, Quaternion localRot, int sortingOrder)
     {
@@ -21,49 +28,57 @@ public class CardHover : MonoBehaviour
         ApplySortingOrder(baseSortingOrder);
     }
 
-    public void Hover()
+    public void Hover() => _isHovered = true;
+    public void Unhover() => _isHovered = false;
+
+    public void StartDrag() => _isDragging = true;
+
+    public void UpdateDrag(Vector3 localPos) => _dragLocalPos = localPos;
+
+    public void EndDrag() => _isDragging = false;
+
+    // 출렁임 트리거
+    public void TriggerWave(float amount)
     {
-        if (_isHovered) return;
-        _isHovered = true;
-        AnimateTo(baseLocalPos + Vector3.up * hoverOffset);
+        _waveAmount = amount;
+        _waveTime = 0f;
     }
 
-    public void Unhover()
+    void LateUpdate()
     {
-        if (!_isHovered) return;
-        _isHovered = false;
-        AnimateTo(baseLocalPos);
-    }
+        // 목표 위치 결정
+        Vector3 target;
+        Quaternion targetRot;
 
-    public void RefreshHover()
-    {
-        if (_isHovered)
-            AnimateTo(baseLocalPos + Vector3.up * hoverOffset);
-    }
-
-    private void AnimateTo(Vector3 targetPos)
-    {
-        if (_anim != null)
-            StopCoroutine(_anim);
-        _anim = StartCoroutine(AnimateCoroutine(targetPos));
-    }
-
-    private IEnumerator AnimateCoroutine(Vector3 targetPos)
-    {
-        Vector3 fromPos = transform.localPosition;
-        float elapsed = 0f;
-
-        while (elapsed < hoverDuration)
+        if (_isDragging)
         {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / hoverDuration);
-            float ease = 1f - Mathf.Pow(1f - t, 3f);
-            transform.localPosition = Vector3.Lerp(fromPos, targetPos, ease);
-            yield return null;
+            target = _dragLocalPos;
+            targetRot = Quaternion.identity;
+        }
+        else
+        {
+            target = baseLocalPos;
+            targetRot = baseLocalRot;
+
+            if (_isHovered)
+                target += Vector3.up * hoverOffset;
         }
 
-        transform.localPosition = targetPos;
-        _anim = null;
+        // 출렁임 적용
+        if (_waveAmount > 0.001f)
+        {
+            _waveTime += Time.deltaTime;
+            float wave = _waveAmount * Mathf.Sin(_waveTime * _waveFreq) * Mathf.Exp(-_waveDecay * _waveTime);
+            target += Vector3.up * wave;
+
+            if (Mathf.Abs(wave) < 0.001f)
+                _waveAmount = 0f;
+        }
+
+        // SmoothDamp 대신 고정 Lerp (떨림 방지)
+        float t = 1f - Mathf.Exp(-smoothSpeed * Time.deltaTime);
+        transform.localPosition = Vector3.Lerp(transform.localPosition, target, t);
+        transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRot, t);
     }
 
     private void ApplySortingOrder(int order)

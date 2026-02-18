@@ -3,6 +3,7 @@ using UnityEngine;
 public class Slot : MonoBehaviour
 {
     private GameObject _placedCard;
+    private int _placedCardValue;
 
     public bool HasCard => _placedCard != null;
 
@@ -12,22 +13,52 @@ public class Slot : MonoBehaviour
             gameObject.AddComponent<BoxCollider2D>();
     }
 
+    void Update()
+    {
+        if (_placedCard != null && Input.GetMouseButtonDown(1))
+        {
+            Camera cam = Camera.main;
+            if (cam == null) return;
+
+            Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
+            var col = GetComponent<Collider2D>();
+            if (col != null && col.OverlapPoint(mouseWorld))
+            {
+                ReturnCardToDeck();
+            }
+        }
+    }
+
     public void PlaceCard(GameObject card)
     {
         _placedCard = card;
 
-        // 슬롯의 자식으로 넣기
+        var cv = card.GetComponent<CardValue>();
+        _placedCardValue = cv != null ? cv.value : 0;
+
         card.transform.SetParent(transform);
         card.transform.localPosition = Vector3.zero;
         card.transform.localRotation = Quaternion.identity;
 
-        // 슬롯 크기에 맞추기
         FitToSlot(card);
 
-        // CardHover 비활성화
         var hover = card.GetComponent<CardHover>();
         if (hover != null)
             hover.enabled = false;
+
+        var colliders = card.GetComponentsInChildren<Collider2D>();
+        foreach (var c in colliders)
+            c.enabled = false;
+
+        var renderers = card.GetComponentsInChildren<Renderer>();
+        foreach (var r in renderers)
+            r.sortingOrder = 0;
+    }
+
+    public CardValue GetCardValue()
+    {
+        if (_placedCard == null) return null;
+        return _placedCard.GetComponent<CardValue>();
     }
 
     public void ClearCard()
@@ -39,12 +70,24 @@ public class Slot : MonoBehaviour
         }
     }
 
+    private void ReturnCardToDeck()
+    {
+        var deck = FindObjectOfType<Deck>();
+        if (deck == null || deck.IsHandFull) return;
+
+        int value = _placedCardValue;
+
+        Destroy(_placedCard);
+        _placedCard = null;
+
+        deck.AddCardByValue(value);
+    }
+
     private void FitToSlot(GameObject card)
     {
         var col = GetComponent<Collider2D>();
         Vector2 slotSize = col.bounds.size;
 
-        // 카드의 렌더러 바운드
         var renderer = card.GetComponentInChildren<Renderer>();
         if (renderer == null) return;
 

@@ -45,11 +45,14 @@ public class Deck : MonoBehaviour
 
     [Range(10f, 180f)]
     public float baseAngleRange = 40f;
-
     public float anglePerCard = 8f;
 
+    [Header("─ 소팅 설정 ─")]
+    [Tooltip("덱 카드 소팅 오더 시작값 (슬롯보다 높게)")]
+    public int baseSortingOrder = 100;
+
     [Header("─ 애니메이션 설정 ─")]
-    public float dealDelay = 0.1f;
+    public float dealDelay = 0.08f;
     public Vector3 spawnOffset = new Vector3(0f, -3f, 0f);
 
     [Header("─ 출렁임 설정 ─")]
@@ -57,10 +60,13 @@ public class Deck : MonoBehaviour
 
     // ─── 내부 상태 ───
     private readonly List<GameObject> _spawnedCards = new List<GameObject>();
-    private List<GameObject> _prefabPool;
+    private struct CardPool { public GameObject prefab; public int value; }
+    private List<CardPool> _prefabPool;
     private bool _isAnimating;
     private CardHover _currentHover;
     private CardHover _draggingCard;
+
+    public bool IsHandFull => _spawnedCards.Count >= maxCards;
 
     private float CurrentAngleRange =>
         baseAngleRange + Mathf.Max(0, _spawnedCards.Count - drawCount) * anglePerCard;
@@ -99,15 +105,12 @@ public class Deck : MonoBehaviour
             Vector3 localPos = Parent.InverseTransformPoint(mouseWorld);
             _draggingCard.UpdateDrag(localPos);
 
-            // 마우스 놓음
             if (Input.GetMouseButtonUp(0))
             {
-                // 슬롯 위인지 확인
                 Slot slot = FindSlotAtPosition(mouseWorld);
 
                 if (slot != null && !slot.HasCard)
                 {
-                    // 카드를 슬롯에 올리고 덱에서 제거
                     GameObject cardObj = _draggingCard.gameObject;
                     _spawnedCards.Remove(cardObj);
                     slot.PlaceCard(cardObj);
@@ -116,7 +119,6 @@ public class Deck : MonoBehaviour
                 }
                 else
                 {
-                    // 슬롯 아님 → 손으로 복귀
                     _draggingCard.EndDrag();
                     TriggerWaveAll(_draggingCard);
                 }
@@ -152,7 +154,6 @@ public class Deck : MonoBehaviour
                 _currentHover.Hover();
         }
 
-        // 클릭 → 드래그 시작
         if (_currentHover != null && Input.GetMouseButtonDown(0))
         {
             _draggingCard = _currentHover;
@@ -208,12 +209,6 @@ public class Deck : MonoBehaviour
             return;
         }
 
-        for (int i = 0; i < drawCount; i++)
-        {
-            GameObject prefab = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-            SpawnCard(prefab);
-        }
-
         StartCoroutine(DealAnimation());
     }
 
@@ -229,9 +224,29 @@ public class Deck : MonoBehaviour
             return;
         }
 
-        GameObject prefab = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-        SpawnCard(prefab);
+        var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
+        SpawnCard(pick.prefab, pick.value);
         UpdateAllCardBases();
+    }
+
+    // ─────────────────────────────────────────
+    //  특정 값의 카드를 새로 생성하여 덱에 추가
+    // ─────────────────────────────────────────
+    public void AddCardByValue(int value)
+    {
+        if (_prefabPool == null) return;
+
+        // 해당 value의 프리팹 찾기
+        foreach (var entry in _prefabPool)
+        {
+            if (entry.value == value)
+            {
+                SpawnCard(entry.prefab, entry.value);
+                UpdateAllCardBases();
+                TriggerWaveAll(null);
+                return;
+            }
+        }
     }
 
     // ─────────────────────────────────────────
@@ -259,7 +274,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  내부: 카드 생성 + CardHover 자동 부착
     // ─────────────────────────────────────────
-    private GameObject SpawnCard(GameObject prefab)
+    private GameObject SpawnCard(GameObject prefab, int value)
     {
         GameObject card = Instantiate(prefab, Parent);
         card.transform.localPosition = spawnOffset;
@@ -271,24 +286,37 @@ public class Deck : MonoBehaviour
         if (card.GetComponent<CardHover>() == null)
             card.AddComponent<CardHover>();
 
+        // 카드 값 부여
+        var cv = card.GetComponent<CardValue>();
+        if (cv == null) cv = card.AddComponent<CardValue>();
+        cv.value = value;
+
         _spawnedCards.Add(card);
         return card;
     }
 
     // ─────────────────────────────────────────
-    //  딜 애니메이션
+    //  딜 애니메이션: 한 장씩 생성하면서 쫘라락
     // ─────────────────────────────────────────
     private IEnumerator DealAnimation()
     {
         _isAnimating = true;
-        int count = _spawnedCards.Count;
 
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < drawCount; i++)
         {
-            GetArchTarget(i, count, out Vector3 pos, out Quaternion rot);
-            var hover = _spawnedCards[i].GetComponent<CardHover>();
-            if (hover != null)
-                hover.SetBase(pos, rot, i);
+            // 한 장씩 생성
+            var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
+            SpawnCard(pick.prefab, pick.value);
+
+            // 현재까지 생성된 전체 카드 재배치
+            int count = _spawnedCards.Count;
+            for (int j = 0; j < count; j++)
+            {
+                GetArchTarget(j, count, out Vector3 pos, out Quaternion rot);
+                var hover = _spawnedCards[j].GetComponent<CardHover>();
+                if (hover != null)
+                    hover.SetBase(pos, rot, baseSortingOrder + j);
+            }
 
             yield return new WaitForSeconds(dealDelay);
         }
@@ -309,7 +337,7 @@ public class Deck : MonoBehaviour
             GetArchTarget(i, count, out Vector3 pos, out Quaternion rot);
             var hover = _spawnedCards[i].GetComponent<CardHover>();
             if (hover != null)
-                hover.SetBase(pos, rot, i);
+                hover.SetBase(pos, rot, baseSortingOrder + i);
         }
     }
 
@@ -336,9 +364,9 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  유효한 프리팹 풀 수집
     // ─────────────────────────────────────────
-    private List<GameObject> BuildPrefabPool()
+    private List<CardPool> BuildPrefabPool()
     {
-        List<GameObject> pool = new List<GameObject>();
+        List<CardPool> pool = new List<CardPool>();
 
         if (deckGroups == null) return pool;
 
@@ -346,10 +374,17 @@ public class Deck : MonoBehaviour
         {
             if (group?.cards == null) continue;
 
-            foreach (CardEntry card in group.cards)
+            for (int i = 0; i < group.cards.Length; i++)
             {
+                CardEntry card = group.cards[i];
                 if (card != null && card.prefab != null)
-                    pool.Add(card.prefab);
+                {
+                    pool.Add(new CardPool
+                    {
+                        prefab = card.prefab,
+                        value = i + 1  // 원소 순서대로 1~6
+                    });
+                }
             }
         }
 

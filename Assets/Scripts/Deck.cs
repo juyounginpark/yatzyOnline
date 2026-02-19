@@ -66,9 +66,11 @@ public class Deck : MonoBehaviour
     private CardHover _currentHover;
     private CardHover _draggingCard;
 
+    public bool IsAnimating => _isAnimating;
     public bool IsHandFull => _spawnedCards.Count >= maxCards;
     public GameObject HoveredCard => _currentHover != null ? _currentHover.gameObject : null;
     public GameObject DraggedCard => _draggingCard != null ? _draggingCard.gameObject : null;
+    public IReadOnlyList<GameObject> SpawnedCards => _spawnedCards;
 
     private float CurrentAngleRange =>
         baseAngleRange + Mathf.Max(0, _spawnedCards.Count - drawCount) * anglePerCard;
@@ -317,7 +319,7 @@ public class Deck : MonoBehaviour
                 GetArchTarget(j, count, out Vector3 pos, out Quaternion rot);
                 var hover = _spawnedCards[j].GetComponent<CardHover>();
                 if (hover != null)
-                    hover.SetBase(pos, rot, baseSortingOrder + j);
+                    hover.SetBase(pos, rot, baseSortingOrder + j * 2);
             }
 
             yield return new WaitForSeconds(dealDelay);
@@ -339,7 +341,7 @@ public class Deck : MonoBehaviour
             GetArchTarget(i, count, out Vector3 pos, out Quaternion rot);
             var hover = _spawnedCards[i].GetComponent<CardHover>();
             if (hover != null)
-                hover.SetBase(pos, rot, baseSortingOrder + i);
+                hover.SetBase(pos, rot, baseSortingOrder + i * 2);
         }
     }
 

@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
 
 public class GameFlow : MonoBehaviour
@@ -14,21 +13,28 @@ public class GameFlow : MonoBehaviour
     [Tooltip("조합에 기여하는 슬롯 카드에 표시")]
     public Sprite effectContribute;
 
+    [Tooltip("슬롯에 넣었을 때 최고점이 나오는 덱 카드에 표시")]
+    public Sprite effectBestPick;
+
     [Header("─ 참조 ─")]
     public Deck deck;
 
     // ─── 이펙트 오브젝트 ───
     private GameObject _hoverEffect;
+    private readonly List<GameObject> _bestPickEffects = new List<GameObject>();
     private readonly List<GameObject> _slotEffects = new List<GameObject>();
-    private int _lastFilledCount = -1;
+    private string _lastBestCombo = "";
     private GameObject _lastEffectTarget;
+
+    // ─── 외부 참조용 현재 상태 ───
+    public float CurrentBestScore { get; private set; }
+    public string CurrentBestRule { get; private set; } = "";
 
     void Start()
     {
         if (deck == null)
             deck = FindObjectOfType<Deck>();
 
-        // 슬롯 이펙트 오브젝트 미리 생성
         for (int i = 0; i < slots.Length; i++)
         {
             var fx = CreateEffectObject($"SlotEffect_{i}", effectContribute);
@@ -36,15 +42,22 @@ public class GameFlow : MonoBehaviour
             _slotEffects.Add(fx);
         }
 
-        // 호버 이펙트 오브젝트
         _hoverEffect = CreateEffectObject("HoverEffect", effectHover);
         _hoverEffect.SetActive(false);
+
+        for (int i = 0; i < 10; i++)
+        {
+            var fx = CreateEffectObject($"BestPickEffect_{i}", effectBestPick);
+            fx.SetActive(false);
+            _bestPickEffects.Add(fx);
+        }
     }
 
     void Update()
     {
         UpdateHoverEffect();
         UpdateSlotEffects();
+        UpdateBestPickEffect();
     }
 
     // ─────────────────────────────────────────
@@ -58,7 +71,6 @@ public class GameFlow : MonoBehaviour
             return;
         }
 
-        // 드래그 중이면 드래그 카드, 아니면 호버 카드
         GameObject target = deck.DraggedCard ?? deck.HoveredCard;
 
         if (target != null)
@@ -75,21 +87,75 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  추천 카드 이펙트 (덱에서 넣으면 최고점인 카드)
+    // ─────────────────────────────────────────
+    private void UpdateBestPickEffect()
+    {
+        if (deck == null || effectBestPick == null || deck.IsAnimating)
+        {
+            foreach (var fx in _bestPickEffects) if (fx != null) fx.SetActive(false);
+            return;
+        }
+
+        var cards = deck.SpawnedCards;
+
+        int slotCount = slots.Length;
+        int[] allValues = new int[slotCount + cards.Count];
+
+        for (int i = 0; i < slotCount; i++)
+        {
+            if (slots[i] != null && slots[i].HasCard)
+            {
+                var cv = slots[i].GetCardValue();
+                allValues[i] = cv != null ? cv.value : 0;
+            }
+        }
+
+        for (int i = 0; i < cards.Count; i++)
+        {
+            var cv = cards[i] != null ? cards[i].GetComponent<CardValue>() : null;
+            allValues[slotCount + i] = cv != null ? cv.value : 0;
+        }
+
+        string dummy;
+        float dummyScore;
+        bool[] contributing = FindContributingIndices(allValues, out dummy, out dummyScore);
+
+        for (int i = 0; i < _bestPickEffects.Count; i++)
+        {
+            int idx = slotCount + i;
+            if (i < cards.Count && cards[i] != null && idx < contributing.Length && contributing[idx])
+            {
+                _bestPickEffects[i].SetActive(true);
+                var hover = cards[i].GetComponent<CardHover>();
+                int sortOrder = hover != null ? hover.baseSortingOrder + 1 : 101;
+                AttachEffect(_bestPickEffects[i], cards[i], effectBestPick, sortOrder);
+            }
+            else
+            {
+                _bestPickEffects[i].SetActive(false);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────
     //  슬롯 조합 기여 이펙트
     // ─────────────────────────────────────────
     private void UpdateSlotEffects()
     {
-        int filled = CountFilledSlots();
+        string currentBest;
+        float currentScore;
+        bool[] contributing = GetContributingSlots(out currentBest, out currentScore);
 
-        if (filled != _lastFilledCount)
+        CurrentBestRule = currentBest;
+        CurrentBestScore = currentScore;
+
+        if (currentBest != _lastBestCombo)
         {
-            _lastFilledCount = filled;
-            if (filled > 0)
+            _lastBestCombo = currentBest;
+            if (!string.IsNullOrEmpty(currentBest))
                 EvaluateAndLog();
         }
-
-        // 기여 카드 계산
-        bool[] contributing = GetContributingSlots();
 
         for (int i = 0; i < slots.Length; i++)
         {
@@ -123,7 +189,6 @@ public class GameFlow : MonoBehaviour
         var fxSr = fx.GetComponent<SpriteRenderer>();
         fxSr.sortingOrder = sortOrder;
 
-        // 카드의 실제 크기 (회전 무관하게 sprite 원본 크기 × lossyScale)
         Vector2 cardSpriteSize = cardSr.sprite.bounds.size;
         Vector3 cardScale = cardSr.transform.lossyScale;
         float cardW = cardSpriteSize.x * Mathf.Abs(cardScale.x);
@@ -146,127 +211,137 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  조합 기여 슬롯 계산
+    //  슬롯 조합 기여 계산 (래퍼)
     // ─────────────────────────────────────────
-    private bool[] GetContributingSlots()
+    private bool[] GetContributingSlots(out string bestComboName, out float bestComboScore)
     {
-        bool[] result = new bool[slots.Length];
-
-        // 슬롯별 값 수집 (빈 슬롯은 0)
         int[] slotValues = new int[slots.Length];
-        List<int> filledValues = new List<int>();
         for (int i = 0; i < slots.Length; i++)
         {
             if (slots[i] != null && slots[i].HasCard)
             {
                 var cv = slots[i].GetCardValue();
                 slotValues[i] = cv != null ? cv.value : 0;
-                filledValues.Add(slotValues[i]);
             }
         }
+        return FindContributingIndices(slotValues, out bestComboName, out bestComboScore);
+    }
+
+    // ─────────────────────────────────────────
+    //  공통: 값 배열에서 최고 조합 기여 인덱스 계산
+    // ─────────────────────────────────────────
+    private bool[] FindContributingIndices(int[] values, out string bestComboName, out float bestComboScore)
+    {
+        bestComboName = "";
+        bestComboScore = 0f;
+        bool[] result = new bool[values.Length];
+
+        List<int> filledValues = new List<int>();
+        for (int i = 0; i < values.Length; i++)
+            if (values[i] > 0) filledValues.Add(values[i]);
 
         if (filledValues.Count == 0) return result;
 
         int[] dice = filledValues.ToArray();
-        System.Array.Sort(dice);
+        bestComboScore = EvaluateHand(dice, out bestComboName);
+        if (bestComboScore <= 0f) return result;
 
-        // 최고 룰 찾기
-        string bestName = "";
-        int bestScore = 0;
-        bool[] bestContrib = new bool[slots.Length];
+        int[] counts = CountDice(dice);
 
-        // 숫자별 (Ones ~ Sixes)
-        for (int num = 1; num <= 6; num++)
+        switch (bestComboName)
         {
-            int score = SumOf(dice, num);
-            if (score > bestScore)
+            case "파이브카드":
             {
-                bestScore = score;
-                bestName = num.ToString();
-                bestContrib = MarkSlots(slotValues, v => v == num);
+                int val = 0;
+                for (int i = 6; i >= 1; i--) if (counts[i] >= 5) { val = i; break; }
+                result = MarkSlots(values, v => v == val, 5);
+                break;
             }
+            case "포카드":
+            {
+                int val = 0;
+                for (int i = 6; i >= 1; i--) if (counts[i] >= 4) { val = i; break; }
+                result = MarkSlots(values, v => v == val, 4);
+                break;
+            }
+            case "풀하우스":
+            {
+                int tripleVal = 0, pairVal = 0;
+                for (int i = 6; i >= 1; i--)
+                {
+                    if (counts[i] >= 3 && tripleVal == 0) tripleVal = i;
+                    else if (counts[i] >= 2 && pairVal == 0) pairVal = i;
+                }
+                bool[] marks = new bool[values.Length];
+                int ct = 0, cp = 0;
+                for (int j = 0; j < values.Length; j++)
+                {
+                    if (values[j] == tripleVal && ct < 3) { marks[j] = true; ct++; }
+                    else if (values[j] == pairVal && cp < 2) { marks[j] = true; cp++; }
+                }
+                result = marks;
+                break;
+            }
+            case "스트레이트(하이)":
+                result = MarkSlotsInSet(values, new HashSet<int> { 2, 3, 4, 5, 6 });
+                break;
+            case "스트레이트(로우)":
+                result = MarkSlotsInSet(values, new HashSet<int> { 1, 2, 3, 4, 5 });
+                break;
+            case "트리플":
+            {
+                int val = 0;
+                for (int i = 6; i >= 1; i--) if (counts[i] >= 3) { val = i; break; }
+                result = MarkSlots(values, v => v == val, 3);
+                break;
+            }
+            case "투페어":
+            {
+                List<int> pairs = new List<int>();
+                for (int i = 6; i >= 1; i--) if (counts[i] >= 2) pairs.Add(i);
+                if (pairs.Count >= 2)
+                {
+                    int bigP = pairs[0], smallP = pairs[1];
+                    bool[] marks = new bool[values.Length];
+                    int c1 = 0, c2 = 0;
+                    for (int j = 0; j < values.Length; j++)
+                    {
+                        if (values[j] == bigP && c1 < 2) { marks[j] = true; c1++; }
+                        else if (values[j] == smallP && c2 < 2) { marks[j] = true; c2++; }
+                    }
+                    result = marks;
+                }
+                break;
+            }
+            case "원페어":
+            {
+                int val = 0;
+                for (int i = 6; i >= 1; i--) if (counts[i] >= 2) { val = i; break; }
+                result = MarkSlots(values, v => v == val, 2);
+                break;
+            }
+            case "하이카드":
+                result = MarkAllFilled(values);
+                break;
         }
 
-        // Three of a Kind
-        {
-            int score = ThreeOfAKind(dice);
-            if (score > bestScore)
-            {
-                int kindVal = FindKindValue(dice, 3);
-                bestScore = score;
-                bestName = "Three of a Kind";
-                bestContrib = MarkSlots(slotValues, v => v == kindVal);
-            }
-        }
-
-        // Four of a Kind
-        {
-            int score = FourOfAKind(dice);
-            if (score > bestScore)
-            {
-                int kindVal = FindKindValue(dice, 4);
-                bestScore = score;
-                bestName = "Four of a Kind";
-                bestContrib = MarkSlots(slotValues, v => v == kindVal);
-            }
-        }
-
-        // Full House
-        {
-            int score = FullHouse(dice);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestName = "Full House";
-                bestContrib = MarkAllFilled(slotValues);
-            }
-        }
-
-        // Small Straight
-        {
-            int score = SmallStraight(dice);
-            if (score > bestScore)
-            {
-                HashSet<int> straight = FindSmallStraightSet(dice);
-                bestScore = score;
-                bestName = "Small Straight";
-                bestContrib = MarkSlotsInSet(slotValues, straight);
-            }
-        }
-
-        // Large Straight
-        {
-            int score = LargeStraight(dice);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestName = "Large Straight";
-                bestContrib = MarkAllFilled(slotValues);
-            }
-        }
-
-        // Yacht
-        {
-            int score = Yacht(dice);
-            if (score > bestScore)
-            {
-                bestScore = score;
-                bestName = "Yacht";
-                bestContrib = MarkAllFilled(slotValues);
-            }
-        }
-
-        return bestContrib;
+        return result;
     }
 
     // ─── 기여 슬롯 마킹 헬퍼 ───
 
-    private bool[] MarkSlots(int[] slotValues, System.Func<int, bool> predicate)
+    private bool[] MarkSlots(int[] slotValues, System.Func<int, bool> predicate, int maxCount = int.MaxValue)
     {
         bool[] marks = new bool[slotValues.Length];
+        int count = 0;
         for (int i = 0; i < slotValues.Length; i++)
-            if (slotValues[i] > 0 && predicate(slotValues[i]))
+        {
+            if (slotValues[i] > 0 && predicate(slotValues[i]) && count < maxCount)
+            {
                 marks[i] = true;
+                count++;
+            }
+        }
         return marks;
     }
 
@@ -293,38 +368,9 @@ public class GameFlow : MonoBehaviour
         return marks;
     }
 
-    private int FindKindValue(int[] dice, int minCount)
-    {
-        int[] counts = CountDice(dice);
-        for (int i = 1; i <= 6; i++)
-            if (counts[i] >= minCount) return i;
-        return 0;
-    }
-
-    private HashSet<int> FindSmallStraightSet(int[] dice)
-    {
-        HashSet<int> unique = new HashSet<int>(dice);
-        if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6))
-            return new HashSet<int> { 3, 4, 5, 6 };
-        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5))
-            return new HashSet<int> { 2, 3, 4, 5 };
-        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4))
-            return new HashSet<int> { 1, 2, 3, 4 };
-        return new HashSet<int>();
-    }
-
     // ─────────────────────────────────────────
     //  디버그 로그
     // ─────────────────────────────────────────
-
-    private int CountFilledSlots()
-    {
-        int count = 0;
-        foreach (var slot in slots)
-            if (slot != null && slot.HasCard) count++;
-        return count;
-    }
-
     private void EvaluateAndLog()
     {
         List<int> values = new List<int>();
@@ -337,112 +383,205 @@ public class GameFlow : MonoBehaviour
         if (values.Count == 0) return;
 
         int[] dice = values.ToArray();
-        System.Array.Sort(dice);
-
-        string bestName = "없음";
-        int bestScore = 0;
-
-        CheckRule("Ones",             SumOf(dice, 1),      ref bestName, ref bestScore);
-        CheckRule("Twos",             SumOf(dice, 2),      ref bestName, ref bestScore);
-        CheckRule("Threes",           SumOf(dice, 3),      ref bestName, ref bestScore);
-        CheckRule("Fours",            SumOf(dice, 4),      ref bestName, ref bestScore);
-        CheckRule("Fives",            SumOf(dice, 5),      ref bestName, ref bestScore);
-        CheckRule("Sixes",            SumOf(dice, 6),      ref bestName, ref bestScore);
-        CheckRule("Three of a Kind",  ThreeOfAKind(dice),  ref bestName, ref bestScore);
-        CheckRule("Four of a Kind",   FourOfAKind(dice),   ref bestName, ref bestScore);
-        CheckRule("Full House",       FullHouse(dice),     ref bestName, ref bestScore);
-        CheckRule("Small Straight",   SmallStraight(dice), ref bestName, ref bestScore);
-        CheckRule("Large Straight",   LargeStraight(dice), ref bestName, ref bestScore);
-        CheckRule("Yacht",            Yacht(dice),         ref bestName, ref bestScore);
+        string ruleName;
+        float score = EvaluateHand(dice, out ruleName);
 
         string diceStr = string.Join(", ", dice);
-        Debug.Log($"[GameFlow] 카드: [{diceStr}] → 최고: {bestName} ({bestScore}점)");
+        Debug.Log($"[GameFlow] 카드: [{diceStr}] → 최고: {ruleName} ({score:F1}점)");
     }
 
-    private void CheckRule(string name, int score, ref string bestName, ref int bestScore)
+    // ─────────────────────────────────────────
+    //  핸드 평가 (우선순위 기반)
+    // ─────────────────────────────────────────
+    private float EvaluateHand(int[] dice, out string ruleName)
     {
-        if (score > bestScore)
-        {
-            bestScore = score;
-            bestName = name;
-        }
+        ruleName = "";
+        if (dice.Length == 0) return 0f;
+
+        int[] sorted = (int[])dice.Clone();
+        System.Array.Sort(sorted);
+        int[] counts = CountDice(sorted);
+
+        float score;
+
+        score = ScoreFiveOfAKind(counts);
+        if (score > 0f) { ruleName = "파이브카드"; return score; }
+
+        score = ScoreFourOfAKind(counts);
+        if (score > 0f) { ruleName = "포카드"; return score; }
+
+        score = ScoreFullHouse(counts);
+        if (score > 0f) { ruleName = "풀하우스"; return score; }
+
+        score = ScoreStraightHigh(sorted);
+        if (score > 0f) { ruleName = "스트레이트(하이)"; return score; }
+
+        score = ScoreStraightLow(sorted);
+        if (score > 0f) { ruleName = "스트레이트(로우)"; return score; }
+
+        score = ScoreTriple(counts);
+        if (score > 0f) { ruleName = "트리플"; return score; }
+
+        score = ScoreTwoPair(counts);
+        if (score > 0f) { ruleName = "투페어"; return score; }
+
+        score = ScoreOnePair(counts);
+        if (score > 0f) { ruleName = "원페어"; return score; }
+
+        score = ScoreHighCard(sorted);
+        if (score > 0f) { ruleName = "하이카드"; return score; }
+
+        return 0f;
     }
 
     // ─────────────────────────────────────────
     //  스코어링 함수들
     // ─────────────────────────────────────────
 
-    private int SumOf(int[] dice, int num)
-    {
-        int sum = 0;
-        foreach (int d in dice)
-            if (d == num) sum += d;
-        return sum;
-    }
-
     private int[] CountDice(int[] dice)
     {
         int[] counts = new int[7];
         foreach (int d in dice)
-            counts[d]++;
+            if (d >= 1 && d <= 6) counts[d]++;
         return counts;
     }
 
-    private int ThreeOfAKind(int[] dice)
+    // 파이브카드: 95 + num × 0.5
+    private float ScoreFiveOfAKind(int[] counts)
     {
-        int[] counts = CountDice(dice);
-        foreach (int c in counts)
-            if (c >= 3) return dice.Sum();
-        return 0;
+        for (int i = 6; i >= 1; i--)
+            if (counts[i] >= 5) return 95f + i * 0.5f;
+        return 0f;
     }
 
-    private int FourOfAKind(int[] dice)
+    // 포카드: 80 + fourVal × 1 + kicker × 0.1
+    private float ScoreFourOfAKind(int[] counts)
     {
-        int[] counts = CountDice(dice);
-        foreach (int c in counts)
-            if (c >= 4) return dice.Sum();
-        return 0;
+        int fourVal = 0;
+        for (int i = 6; i >= 1; i--)
+            if (counts[i] >= 4) { fourVal = i; break; }
+        if (fourVal == 0) return 0f;
+
+        int kicker = 0;
+        for (int i = 6; i >= 1; i--)
+            if (i != fourVal && counts[i] > 0) { kicker = i; break; }
+
+        return 80f + fourVal * 1f + kicker * 0.1f;
     }
 
-    private int FullHouse(int[] dice)
+    // 풀하우스: 65 + tripleVal × 1 + pairVal × 0.1
+    private float ScoreFullHouse(int[] counts)
     {
-        int[] counts = CountDice(dice);
-        bool hasThree = false, hasTwo = false;
-        foreach (int c in counts)
+        int tripleVal = 0, pairVal = 0;
+        for (int i = 6; i >= 1; i--)
         {
-            if (c == 3) hasThree = true;
-            if (c == 2) hasTwo = true;
+            if (counts[i] >= 3 && tripleVal == 0)
+                tripleVal = i;
+            else if (counts[i] >= 2 && pairVal == 0)
+                pairVal = i;
         }
-        return (hasThree && hasTwo) ? 25 : 0;
+        return (tripleVal > 0 && pairVal > 0) ? 65f + tripleVal * 1f + pairVal * 0.1f : 0f;
     }
 
-    private int SmallStraight(int[] dice)
+    // 스트레이트(하이): 2,3,4,5,6 → 58
+    private float ScoreStraightHigh(int[] sorted)
     {
-        HashSet<int> unique = new HashSet<int>(dice);
-        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4)) return 30;
-        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5)) return 30;
-        if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6)) return 30;
-        return 0;
+        HashSet<int> unique = new HashSet<int>(sorted);
+        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4)
+            && unique.Contains(5) && unique.Contains(6))
+            return 58f;
+        return 0f;
     }
 
-    private int LargeStraight(int[] dice)
+    // 스트레이트(로우): 1,2,3,4,5 → 55
+    private float ScoreStraightLow(int[] sorted)
     {
-        if (dice.Length < 5) return 0;
-        HashSet<int> unique = new HashSet<int>(dice);
-        if (unique.Count >= 5)
+        HashSet<int> unique = new HashSet<int>(sorted);
+        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3)
+            && unique.Contains(4) && unique.Contains(5))
+            return 55f;
+        return 0f;
+    }
+
+    // 트리플: 40 + tripleVal × 2 + bigKicker × 0.3 + smallKicker × 0.1
+    private float ScoreTriple(int[] counts)
+    {
+        int tripleVal = 0;
+        for (int i = 6; i >= 1; i--)
+            if (counts[i] >= 3) { tripleVal = i; break; }
+        if (tripleVal == 0) return 0f;
+
+        List<int> kickers = new List<int>();
+        for (int i = 6; i >= 1; i--)
         {
-            if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5)) return 40;
-            if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6)) return 40;
+            if (i == tripleVal) continue;
+            for (int j = 0; j < counts[i]; j++)
+                kickers.Add(i);
         }
-        return 0;
+
+        float bigKicker = kickers.Count > 0 ? kickers[0] : 0;
+        float smallKicker = kickers.Count > 1 ? kickers[1] : 0;
+
+        return 40f + tripleVal * 2f + bigKicker * 0.3f + smallKicker * 0.1f;
     }
 
-    private int Yacht(int[] dice)
+    // 투페어: 25 + bigPair × 2 + smallPair × 0.3 + kicker × 0.1
+    private float ScoreTwoPair(int[] counts)
     {
-        if (dice.Length < 5) return 0;
-        int[] counts = CountDice(dice);
-        foreach (int c in counts)
-            if (c >= 5) return 50;
-        return 0;
+        List<int> pairs = new List<int>();
+        for (int i = 6; i >= 1; i--)
+            if (counts[i] >= 2) pairs.Add(i);
+
+        if (pairs.Count < 2) return 0f;
+
+        int bigPair = pairs[0];
+        int smallPair = pairs[1];
+
+        int kicker = 0;
+        int[] tempCounts = (int[])counts.Clone();
+        tempCounts[bigPair] -= 2;
+        tempCounts[smallPair] -= 2;
+        for (int i = 6; i >= 1; i--)
+            if (tempCounts[i] > 0) { kicker = i; break; }
+
+        return 25f + bigPair * 2f + smallPair * 0.3f + kicker * 0.1f;
+    }
+
+    // 원페어: 10 + pairVal × 2 + bigKicker × 0.5 + midKicker × 0.2 + smallKicker × 0.1
+    private float ScoreOnePair(int[] counts)
+    {
+        int pairVal = 0;
+        for (int i = 6; i >= 1; i--)
+            if (counts[i] >= 2) { pairVal = i; break; }
+        if (pairVal == 0) return 0f;
+
+        List<int> kickers = new List<int>();
+        int[] tempCounts = (int[])counts.Clone();
+        tempCounts[pairVal] -= 2;
+        for (int i = 6; i >= 1; i--)
+            for (int j = 0; j < tempCounts[i]; j++)
+                kickers.Add(i);
+
+        float bigKicker = kickers.Count > 0 ? kickers[0] : 0;
+        float midKicker = kickers.Count > 1 ? kickers[1] : 0;
+        float smallKicker = kickers.Count > 2 ? kickers[2] : 0;
+
+        return 10f + pairVal * 2f + bigKicker * 0.5f + midKicker * 0.2f + smallKicker * 0.1f;
+    }
+
+    // 하이카드: biggest × 2 + second × 0.8 + third × 0.3 + fourth × 0.1
+    private float ScoreHighCard(int[] sorted)
+    {
+        if (sorted.Length == 0) return 0f;
+
+        List<int> desc = new List<int>(sorted);
+        desc.Sort((a, b) => b.CompareTo(a));
+
+        float biggest = desc.Count > 0 ? desc[0] : 0;
+        float second  = desc.Count > 1 ? desc[1] : 0;
+        float third   = desc.Count > 2 ? desc[2] : 0;
+        float fourth  = desc.Count > 3 ? desc[3] : 0;
+
+        return biggest * 2f + second * 0.8f + third * 0.3f + fourth * 0.1f;
     }
 }

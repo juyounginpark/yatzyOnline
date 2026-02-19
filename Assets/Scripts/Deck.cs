@@ -67,6 +67,8 @@ public class Deck : MonoBehaviour
     private CardHover _draggingCard;
 
     public bool IsHandFull => _spawnedCards.Count >= maxCards;
+    public GameObject HoveredCard => _currentHover != null ? _currentHover.gameObject : null;
+    public GameObject DraggedCard => _draggingCard != null ? _draggingCard.gameObject : null;
 
     private float CurrentAngleRange =>
         baseAngleRange + Mathf.Max(0, _spawnedCards.Count - drawCount) * anglePerCard;

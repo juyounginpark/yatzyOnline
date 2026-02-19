@@ -55,6 +55,11 @@ public class Slot : MonoBehaviour
             r.sortingOrder = 0;
     }
 
+    public GameObject GetPlacedCard()
+    {
+        return _placedCard;
+    }
+
     public CardValue GetCardValue()
     {
         if (_placedCard == null) return null;

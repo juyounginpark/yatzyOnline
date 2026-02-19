@@ -302,6 +302,9 @@ MonoBehaviour:
   - {fileID: 1659901795}
   - {fileID: 76062315}
   - {fileID: 1548649104}
+  effectHover: {fileID: -2550857894587526547, guid: e43e4d983a191374fadb3fa1aaaf4850, type: 3}
+  effectContribute: {fileID: -7158813693357147371, guid: 79c29c4e44c9b9b4396326eb28ebac02, type: 3}
+  deck: {fileID: 484160616}
 --- !u!1001 &493968809
 PrefabInstance:
   m_ObjectHideFlags: 0

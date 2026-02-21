@@ -349,11 +349,11 @@ MonoBehaviour:
       prefab: {fileID: 8002144047082630695, guid: 4e14a54264bb3ab49a9e3a83b023a999, type: 3}
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 431b86bdce5b35043bff5ae6d366d919, type: 3}
-  drawCount: 8
+  drawCount: 5
   maxCards: 10
   deckSpawnPoint: {fileID: 558328321}
   archRadius: 3
-  baseAngleRange: 40
+  baseAngleRange: 60
   anglePerCard: 8
   baseSortingOrder: 100
   dealDelay: 0.1
@@ -437,6 +437,9 @@ MonoBehaviour:
   hitShakeDuration: 0.35
   hitShakeIntensity: 0.15
   cameraShakeIntensity: 0.08
+  activeScale: 1.1
+  inactiveScale: 0.9
+  scaleDuration: 0.3
 --- !u!1001 &493968809
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -1039,7 +1042,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::OppDeck
   deck: {fileID: 484160616}
   cardBackPrefab: {fileID: 8002144047082630695, guid: 76d02f272784433448ed9557901a4ab2, type: 3}
-  drawCount: 8
+  drawCount: 5
   deckSpawnPoint: {fileID: 1083320156}
 --- !u!4 &913808644
 Transform:

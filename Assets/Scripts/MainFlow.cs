@@ -54,6 +54,16 @@ public class MainFlow : MonoBehaviour
     [Tooltip("카메라 흔들림 강도")]
     public float cameraShakeIntensity = 0.08f;
 
+    [Header("─ 턴 카드 크기 연출 ─")]
+    [Tooltip("활성 턴 카드 스케일")]
+    public float activeScale = 1.2f;
+
+    [Tooltip("비활성 턴 카드 스케일")]
+    public float inactiveScale = 0.9f;
+
+    [Tooltip("스케일 전환 시간")]
+    public float scaleDuration = 0.3f;
+
     // ─── 상태 ───
     private bool _isPlayerTurn = true;
     private float _timer;
@@ -78,6 +88,10 @@ public class MainFlow : MonoBehaviour
             endTurnButton.onClick.AddListener(EndTurn);
 
         UpdateInteraction();
+
+        // 초기 스케일: 플레이어 턴이므로 플레이어 확대, 상대 축소
+        SetDeckScale(deck, activeScale);
+        SetDeckScale(oppDeck, inactiveScale);
     }
 
     void Update()
@@ -200,7 +214,62 @@ public class MainFlow : MonoBehaviour
         else
             oppDeck.AddOneCard();
 
+        // 카드 크기 전환 애니메이션
+        yield return StartCoroutine(AnimateTurnScale());
+
         _isTransitioning = false;
+    }
+
+    // ─────────────────────────────────────────
+    //  턴 전환 스케일 애니메이션
+    // ─────────────────────────────────────────
+    private IEnumerator AnimateTurnScale()
+    {
+        // 활성 턴 → 확대, 비활성 턴 → 축소
+        MonoBehaviour activeDeck = _isPlayerTurn ? (MonoBehaviour)deck : (MonoBehaviour)oppDeck;
+        MonoBehaviour inactiveDeck = _isPlayerTurn ? (MonoBehaviour)oppDeck : (MonoBehaviour)deck;
+
+        Transform activeT = GetDeckTransform(activeDeck);
+        Transform inactiveT = GetDeckTransform(inactiveDeck);
+
+        if (activeT == null && inactiveT == null) yield break;
+
+        Vector3 activeStart = activeT != null ? activeT.localScale : Vector3.one;
+        Vector3 inactiveStart = inactiveT != null ? inactiveT.localScale : Vector3.one;
+        Vector3 activeTarget = Vector3.one * activeScale;
+        Vector3 inactiveTarget = Vector3.one * inactiveScale;
+
+        float elapsed = 0f;
+        while (elapsed < scaleDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / scaleDuration);
+            float eased = t * t * (3f - 2f * t); // smoothstep
+
+            if (activeT != null)
+                activeT.localScale = Vector3.Lerp(activeStart, activeTarget, eased);
+            if (inactiveT != null)
+                inactiveT.localScale = Vector3.Lerp(inactiveStart, inactiveTarget, eased);
+
+            yield return null;
+        }
+
+        if (activeT != null) activeT.localScale = activeTarget;
+        if (inactiveT != null) inactiveT.localScale = inactiveTarget;
+    }
+
+    private void SetDeckScale(MonoBehaviour deckComp, float scale)
+    {
+        Transform t = GetDeckTransform(deckComp);
+        if (t != null) t.localScale = Vector3.one * scale;
+    }
+
+    private Transform GetDeckTransform(MonoBehaviour deckComp)
+    {
+        if (deckComp == null) return null;
+        if (deckComp is Deck d && d.deckSpawnPoint != null) return d.deckSpawnPoint;
+        if (deckComp is OppDeck od && od.deckSpawnPoint != null) return od.deckSpawnPoint;
+        return deckComp.transform;
     }
 
     // ─────────────────────────────────────────

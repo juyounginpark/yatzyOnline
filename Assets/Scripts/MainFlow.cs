@@ -40,6 +40,16 @@ public class MainFlow : MonoBehaviour
     [Tooltip("카드 간 발사 딜레이")]
     public float attackStagger = 0.06f;
 
+    [Header("─ 피격 연출 ─")]
+    [Tooltip("피격 흔들림 시간")]
+    public float hitShakeDuration = 0.35f;
+
+    [Tooltip("덱 흔들림 강도")]
+    public float hitShakeIntensity = 0.15f;
+
+    [Tooltip("카메라 흔들림 강도")]
+    public float cameraShakeIntensity = 0.08f;
+
     // ─── 상태 ───
     private bool _isPlayerTurn = true;
     private float _timer;
@@ -127,6 +137,10 @@ public class MainFlow : MonoBehaviour
 
             // 상대 방향으로 회전 후 날리기
             yield return StartCoroutine(FlyAndHit(flyingCards, target.position));
+
+            // 피격 연출: 맞은 쪽 덱 흔들림 + 카메라 흔들림
+            StartCoroutine(ShakeTransform(target, hitShakeDuration, hitShakeIntensity));
+            yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity));
         }
 
         // 턴 전환
@@ -297,5 +311,50 @@ public class MainFlow : MonoBehaviour
         }
 
         Destroy(card);
+    }
+
+    // ─────────────────────────────────────────
+    //  피격 연출: 덱 흔들림
+    // ─────────────────────────────────────────
+    private IEnumerator ShakeTransform(Transform target, float duration, float intensity)
+    {
+        Vector3 originalPos = target.localPosition;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = 1f - (elapsed / duration); // 감쇠
+            float offsetX = Random.Range(-1f, 1f) * intensity * t;
+            float offsetY = Random.Range(-1f, 1f) * intensity * t;
+            target.localPosition = originalPos + new Vector3(offsetX, offsetY, 0f);
+            yield return null;
+        }
+
+        target.localPosition = originalPos;
+    }
+
+    // ─────────────────────────────────────────
+    //  피격 연출: 카메라 흔들림
+    // ─────────────────────────────────────────
+    private IEnumerator ShakeCamera(float duration, float intensity)
+    {
+        Camera cam = Camera.main;
+        if (cam == null) yield break;
+
+        Vector3 originalPos = cam.transform.localPosition;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = 1f - (elapsed / duration); // 감쇠
+            float offsetX = Random.Range(-1f, 1f) * intensity * t;
+            float offsetY = Random.Range(-1f, 1f) * intensity * t;
+            cam.transform.localPosition = originalPos + new Vector3(offsetX, offsetY, 0f);
+            yield return null;
+        }
+
+        cam.transform.localPosition = originalPos;
     }
 }

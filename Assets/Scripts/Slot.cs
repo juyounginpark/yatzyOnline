@@ -4,6 +4,7 @@ public class Slot : MonoBehaviour
 {
     private GameObject _placedCard;
     private int _placedCardValue;
+    private bool _placedCardIsJoker;
 
     public bool HasCard => _placedCard != null;
 
@@ -35,6 +36,7 @@ public class Slot : MonoBehaviour
 
         var cv = card.GetComponent<CardValue>();
         _placedCardValue = cv != null ? cv.value : 0;
+        _placedCardIsJoker = cv != null && cv.isJoker;
 
         card.transform.SetParent(transform);
         card.transform.localPosition = Vector3.zero;
@@ -52,7 +54,7 @@ public class Slot : MonoBehaviour
 
         var renderers = card.GetComponentsInChildren<Renderer>();
         foreach (var r in renderers)
-            r.sortingOrder = 0;
+            r.sortingOrder = 1;
     }
 
     public GameObject GetPlacedCard()
@@ -75,17 +77,34 @@ public class Slot : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 카드를 파괴하지 않고 슬롯에서 분리하여 반환
+    /// </summary>
+    public GameObject ReleaseCard()
+    {
+        if (_placedCard == null) return null;
+
+        GameObject card = _placedCard;
+        _placedCard = null;
+        card.transform.SetParent(null);
+        return card;
+    }
+
     private void ReturnCardToDeck()
     {
         var deck = FindObjectOfType<Deck>();
         if (deck == null || deck.IsHandFull) return;
 
+        bool isJoker = _placedCardIsJoker;
         int value = _placedCardValue;
 
         Destroy(_placedCard);
         _placedCard = null;
 
-        deck.AddCardByValue(value);
+        if (isJoker)
+            deck.AddJokerCard();
+        else
+            deck.AddCardByValue(value);
     }
 
     private void FitToSlot(GameObject card)

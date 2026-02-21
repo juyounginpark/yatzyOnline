@@ -14,15 +14,15 @@ public class CardEntry
 }
 
 // ─────────────────────────────────────────────
-//  이름을 붙일 수 있는 덱 그룹 (최대 6개 카드)
+//  이름을 붙일 수 있는 덱 그룹 (최대 7개 카드, 7번째는 조커)
 // ─────────────────────────────────────────────
 [Serializable]
 public class DeckGroup
 {
     public string groupName = "New Group";
 
-    [Tooltip("그룹에 넣을 프리팹 목록 (최대 6개)")]
-    public CardEntry[] cards = new CardEntry[6];
+    [Tooltip("그룹에 넣을 프리팹 목록 (최대 7개, 7번째는 조커)")]
+    public CardEntry[] cards = new CardEntry[7];
 }
 
 // ─────────────────────────────────────────────
@@ -60,11 +60,13 @@ public class Deck : MonoBehaviour
 
     // ─── 내부 상태 ───
     private readonly List<GameObject> _spawnedCards = new List<GameObject>();
-    private struct CardPool { public GameObject prefab; public int value; }
+    private struct CardPool { public GameObject prefab; public int value; public bool isJoker; }
     private List<CardPool> _prefabPool;
     private bool _isAnimating;
     private CardHover _currentHover;
     private CardHover _draggingCard;
+
+    [HideInInspector] public bool canPlaceInSlot = true;
 
     public bool IsAnimating => _isAnimating;
     public bool IsHandFull => _spawnedCards.Count >= maxCards;
@@ -111,7 +113,7 @@ public class Deck : MonoBehaviour
 
             if (Input.GetMouseButtonUp(0))
             {
-                Slot slot = FindSlotAtPosition(mouseWorld);
+                Slot slot = canPlaceInSlot ? FindSlotAtPosition(mouseWorld) : null;
 
                 if (slot != null && !slot.HasCard)
                 {
@@ -146,6 +148,37 @@ public class Deck : MonoBehaviour
             {
                 topOrder = hover.baseSortingOrder;
                 topHover = hover;
+            }
+        }
+
+        if (topHover != _currentHover)
+        {
+            // 떨림 방지: 현재 호버 카드의 base 영역 안이면 호버 유지
+            // (호버 애니메이션으로 콜라이더가 올라가면서 아래 카드가 감지되는 것 방지)
+            // 단, 더 높은 우선순위 카드로의 전환은 허용
+            if (_currentHover != null
+                && (topHover == null || topHover.baseSortingOrder < _currentHover.baseSortingOrder))
+            {
+                Vector3 baseWorld = Parent.TransformPoint(_currentHover.baseLocalPos);
+                var sr = _currentHover.GetComponentInChildren<SpriteRenderer>();
+                if (sr != null && sr.sprite != null)
+                {
+                    Vector2 spriteSize = sr.sprite.bounds.size;
+                    Vector3 scale = sr.transform.lossyScale;
+                    float halfW = spriteSize.x * Mathf.Abs(scale.x) * 0.5f;
+                    float halfH = spriteSize.y * Mathf.Abs(scale.y) * 0.5f;
+
+                    // 카드 회전 고려: 마우스를 카드 로컬 좌표로 변환
+                    float angle = -_currentHover.baseLocalRot.eulerAngles.z * Mathf.Deg2Rad;
+                    Vector2 diff = (Vector2)(mouseWorld - baseWorld);
+                    Vector2 local = new Vector2(
+                        diff.x * Mathf.Cos(angle) - diff.y * Mathf.Sin(angle),
+                        diff.x * Mathf.Sin(angle) + diff.y * Mathf.Cos(angle)
+                    );
+
+                    if (Mathf.Abs(local.x) < halfW && Mathf.Abs(local.y) < halfH)
+                        topHover = _currentHover;
+                }
             }
         }
 
@@ -229,7 +262,7 @@ public class Deck : MonoBehaviour
         }
 
         var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-        SpawnCard(pick.prefab, pick.value);
+        SpawnCard(pick.prefab, pick.value, pick.isJoker);
         UpdateAllCardBases();
     }
 
@@ -243,9 +276,28 @@ public class Deck : MonoBehaviour
         // 해당 value의 프리팹 찾기
         foreach (var entry in _prefabPool)
         {
-            if (entry.value == value)
+            if (entry.value == value && !entry.isJoker)
             {
                 SpawnCard(entry.prefab, entry.value);
+                UpdateAllCardBases();
+                TriggerWaveAll(null);
+                return;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  조커 카드를 새로 생성하여 덱에 추가
+    // ─────────────────────────────────────────
+    public void AddJokerCard()
+    {
+        if (_prefabPool == null) return;
+
+        foreach (var entry in _prefabPool)
+        {
+            if (entry.isJoker)
+            {
+                SpawnCard(entry.prefab, 0, true);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -278,7 +330,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  내부: 카드 생성 + CardHover 자동 부착
     // ─────────────────────────────────────────
-    private GameObject SpawnCard(GameObject prefab, int value)
+    private GameObject SpawnCard(GameObject prefab, int value, bool isJoker = false)
     {
         GameObject card = Instantiate(prefab, Parent);
         card.transform.localPosition = spawnOffset;
@@ -294,6 +346,7 @@ public class Deck : MonoBehaviour
         var cv = card.GetComponent<CardValue>();
         if (cv == null) cv = card.AddComponent<CardValue>();
         cv.value = value;
+        cv.isJoker = isJoker;
 
         _spawnedCards.Add(card);
         return card;
@@ -310,7 +363,7 @@ public class Deck : MonoBehaviour
         {
             // 한 장씩 생성
             var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-            SpawnCard(pick.prefab, pick.value);
+            SpawnCard(pick.prefab, pick.value, pick.isJoker);
 
             // 현재까지 생성된 전체 카드 재배치
             int count = _spawnedCards.Count;
@@ -383,10 +436,12 @@ public class Deck : MonoBehaviour
                 CardEntry card = group.cards[i];
                 if (card != null && card.prefab != null)
                 {
+                    bool joker = (i == 6); // 7번째 카드는 조커
                     pool.Add(new CardPool
                     {
                         prefab = card.prefab,
-                        value = i + 1  // 원소 순서대로 1~6
+                        value = joker ? 0 : i + 1,  // 원소 순서대로 1~6, 조커는 0
+                        isJoker = joker
                     });
                 }
             }

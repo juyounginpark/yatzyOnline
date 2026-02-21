@@ -101,25 +101,36 @@ public class GameFlow : MonoBehaviour
 
         int slotCount = slots.Length;
         int[] allValues = new int[slotCount + cards.Count];
+        bool[] jokerFlags = new bool[slotCount + cards.Count];
 
         for (int i = 0; i < slotCount; i++)
         {
             if (slots[i] != null && slots[i].HasCard)
             {
                 var cv = slots[i].GetCardValue();
-                allValues[i] = cv != null ? cv.value : 0;
+                if (cv != null)
+                {
+                    jokerFlags[i] = cv.isJoker;
+                    allValues[i] = cv.isJoker ? 0 : cv.value;
+                }
             }
         }
 
         for (int i = 0; i < cards.Count; i++)
         {
             var cv = cards[i] != null ? cards[i].GetComponent<CardValue>() : null;
-            allValues[slotCount + i] = cv != null ? cv.value : 0;
+            if (cv != null)
+            {
+                jokerFlags[slotCount + i] = cv.isJoker;
+                allValues[slotCount + i] = cv.isJoker ? 0 : cv.value;
+            }
         }
+
+        int[] resolved = ResolveJokersOptimal(allValues, jokerFlags);
 
         string dummy;
         float dummyScore;
-        bool[] contributing = FindContributingIndices(allValues, out dummy, out dummyScore);
+        bool[] contributing = FindContributingIndices(resolved, out dummy, out dummyScore);
 
         for (int i = 0; i < _bestPickEffects.Count; i++)
         {
@@ -211,20 +222,73 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  슬롯 조합 기여 계산 (래퍼)
+    //  슬롯 조합 기여 계산 (래퍼) — 조커 해석 포함
     // ─────────────────────────────────────────
     private bool[] GetContributingSlots(out string bestComboName, out float bestComboScore)
     {
         int[] slotValues = new int[slots.Length];
+        bool[] jokerFlags = new bool[slots.Length];
         for (int i = 0; i < slots.Length; i++)
         {
             if (slots[i] != null && slots[i].HasCard)
             {
                 var cv = slots[i].GetCardValue();
-                slotValues[i] = cv != null ? cv.value : 0;
+                if (cv != null)
+                {
+                    jokerFlags[i] = cv.isJoker;
+                    slotValues[i] = cv.isJoker ? 0 : cv.value;
+                }
             }
         }
-        return FindContributingIndices(slotValues, out bestComboName, out bestComboScore);
+        int[] resolved = ResolveJokersOptimal(slotValues, jokerFlags);
+        return FindContributingIndices(resolved, out bestComboName, out bestComboScore);
+    }
+
+    // ─────────────────────────────────────────
+    //  조커 최적 값 해석 (1~6 전부 시도, 최고 점수 채택)
+    // ─────────────────────────────────────────
+    private int[] ResolveJokersOptimal(int[] values, bool[] jokerFlags)
+    {
+        List<int> jokerIndices = new List<int>();
+        for (int i = 0; i < jokerFlags.Length; i++)
+            if (jokerFlags[i]) jokerIndices.Add(i);
+
+        if (jokerIndices.Count == 0) return values;
+
+        int[] bestValues = (int[])values.Clone();
+        float bestScore = -1f;
+
+        int totalCombos = 1;
+        for (int j = 0; j < jokerIndices.Count; j++) totalCombos *= 6;
+
+        int[] trial = new int[values.Length];
+        for (int combo = 0; combo < totalCombos; combo++)
+        {
+            System.Array.Copy(values, trial, values.Length);
+
+            int c = combo;
+            for (int j = 0; j < jokerIndices.Count; j++)
+            {
+                trial[jokerIndices[j]] = (c % 6) + 1;
+                c /= 6;
+            }
+
+            List<int> filled = new List<int>();
+            for (int i = 0; i < trial.Length; i++)
+                if (trial[i] > 0) filled.Add(trial[i]);
+
+            if (filled.Count == 0) continue;
+
+            string rule;
+            float score = EvaluateHand(filled.ToArray(), out rule);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestValues = (int[])trial.Clone();
+            }
+        }
+
+        return bestValues;
     }
 
     // ─────────────────────────────────────────
@@ -373,21 +437,18 @@ public class GameFlow : MonoBehaviour
     // ─────────────────────────────────────────
     private void EvaluateAndLog()
     {
-        List<int> values = new List<int>();
+        List<string> display = new List<string>();
         foreach (var slot in slots)
         {
             if (slot == null || !slot.HasCard) continue;
             var cv = slot.GetCardValue();
-            if (cv != null) values.Add(cv.value);
+            if (cv != null)
+                display.Add(cv.isJoker ? "J" : cv.value.ToString());
         }
-        if (values.Count == 0) return;
+        if (display.Count == 0) return;
 
-        int[] dice = values.ToArray();
-        string ruleName;
-        float score = EvaluateHand(dice, out ruleName);
-
-        string diceStr = string.Join(", ", dice);
-        Debug.Log($"[GameFlow] 카드: [{diceStr}] → 최고: {ruleName} ({score:F1}점)");
+        string diceStr = string.Join(", ", display);
+        Debug.Log($"[GameFlow] 카드: [{diceStr}] → 최고: {CurrentBestRule} ({CurrentBestScore:F1}점)");
     }
 
     // ─────────────────────────────────────────

@@ -427,6 +427,9 @@ MonoBehaviour:
   - {fileID: 222886491}
   endTurnButton: {fileID: 1863709785}
   turnTime: 10
+  showcaseTime: 0.5
+  showcaseMoveDuration: 0.5
+  showcaseSpacing: 1.2
   attackDuration: 0.4
   attackStagger: 0.06
 --- !u!1001 &493968809

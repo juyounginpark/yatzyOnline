@@ -23,6 +23,16 @@ public class MainFlow : MonoBehaviour
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
 
+    [Header("─ 쇼케이스 설정 ─")]
+    [Tooltip("중간 전시 시간")]
+    public float showcaseTime = 1f;
+
+    [Tooltip("쇼케이스 위치로 이동 시간")]
+    public float showcaseMoveDuration = 0.5f;
+
+    [Tooltip("쇼케이스 카드 간 간격")]
+    public float showcaseSpacing = 1.2f;
+
     [Header("─ 공격 애니메이션 ─")]
     [Tooltip("카드가 날아가는 시간")]
     public float attackDuration = 0.4f;
@@ -75,6 +85,11 @@ public class MainFlow : MonoBehaviour
     {
         _isTransitioning = true;
 
+        // 내 스폰 위치
+        Transform mySpawn = _isPlayerTurn
+            ? (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform)
+            : (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform);
+
         // 타격 목표: 상대의 스폰 위치
         Transform target = _isPlayerTurn
             ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
@@ -99,9 +114,20 @@ public class MainFlow : MonoBehaviour
             }
         }
 
-        // 카드 날리기
         if (flyingCards.Count > 0)
+        {
+            // 쇼케이스: PlayerSpawn과 OppSpawn 중간 지점에 카드 나열
+            Vector3 showcaseCenter = (mySpawn.position + target.position) * 0.5f;
+            showcaseCenter.z = 0f;
+
+            yield return StartCoroutine(ArrangeAtShowcase(flyingCards, showcaseCenter));
+
+            // 전시 대기 (무슨 카드 냈는지 확인)
+            yield return new WaitForSeconds(showcaseTime);
+
+            // 상대 방향으로 회전 후 날리기
             yield return StartCoroutine(FlyAndHit(flyingCards, target.position));
+        }
 
         // 턴 전환
         _isPlayerTurn = !_isPlayerTurn;
@@ -132,27 +158,110 @@ public class MainFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  카드 날리기 + 타격 연출
+    //  쇼케이스: 중간 지점에 카드 나열 애니메이션
+    // ─────────────────────────────────────────
+    private IEnumerator ArrangeAtShowcase(List<GameObject> cards, Vector3 center)
+    {
+        int count = cards.Count;
+
+        // 목표 위치: 중앙 기준 균등 배치
+        Vector3[] targets = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            float offset = (i - (count - 1) * 0.5f) * showcaseSpacing;
+            targets[i] = new Vector3(center.x + offset, center.y, 0f);
+        }
+
+        // 시작 상태 저장
+        Vector3[] startPositions = new Vector3[count];
+        Quaternion[] startRotations = new Quaternion[count];
+        for (int i = 0; i < count; i++)
+        {
+            startPositions[i] = cards[i].transform.position;
+            startRotations[i] = cards[i].transform.rotation;
+        }
+
+        float elapsed = 0f;
+        while (elapsed < showcaseMoveDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / showcaseMoveDuration);
+            float eased = t * t * (3f - 2f * t); // smoothstep
+
+            for (int i = 0; i < count; i++)
+            {
+                if (cards[i] == null) continue;
+                cards[i].transform.position = Vector3.Lerp(startPositions[i], targets[i], eased);
+                cards[i].transform.rotation = Quaternion.Slerp(startRotations[i], Quaternion.identity, eased);
+            }
+
+            yield return null;
+        }
+
+        // 최종 위치 보정
+        for (int i = 0; i < count; i++)
+        {
+            if (cards[i] == null) continue;
+            cards[i].transform.position = targets[i];
+            cards[i].transform.rotation = Quaternion.identity;
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  카드 날리기: 회전 → 발사 + 타격 연출
     // ─────────────────────────────────────────
     private IEnumerator FlyAndHit(List<GameObject> cards, Vector3 targetWorld)
     {
-        // 각 카드를 순차적으로 발사
+        // 1) 상대 방향으로 회전 (0.3초)
+        float rotateDuration = 0.3f;
+        Quaternion[] startRotations = new Quaternion[cards.Count];
+        Quaternion[] targetRotations = new Quaternion[cards.Count];
+
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (cards[i] == null) continue;
+            startRotations[i] = cards[i].transform.rotation;
+
+            // 180도 회전
+            targetRotations[i] = startRotations[i] * Quaternion.Euler(0f, 0f, 45f);
+        }
+
+        float elapsed = 0f;
+        while (elapsed < rotateDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / rotateDuration);
+            float eased = t * t * (3f - 2f * t);
+
+            for (int i = 0; i < cards.Count; i++)
+            {
+                if (cards[i] == null) continue;
+                cards[i].transform.rotation = Quaternion.Slerp(startRotations[i], targetRotations[i], eased);
+            }
+
+            yield return null;
+        }
+
+        // 2) 순차적으로 발사
         List<Coroutine> flights = new List<Coroutine>();
         for (int i = 0; i < cards.Count; i++)
         {
+            if (cards[i] == null) continue;
             flights.Add(StartCoroutine(FlyOneCard(cards[i], targetWorld)));
             if (i < cards.Count - 1)
                 yield return new WaitForSeconds(attackStagger);
         }
 
         // 마지막 카드 도착 대기
-        yield return flights[flights.Count - 1];
+        if (flights.Count > 0)
+            yield return flights[flights.Count - 1];
     }
 
     private IEnumerator FlyOneCard(GameObject card, Vector3 targetWorld)
     {
         Vector3 startPos = card.transform.position;
         Vector3 startScale = card.transform.localScale;
+        Quaternion startRot = card.transform.rotation;
 
         // 모든 SpriteRenderer 수집
         var renderers = card.GetComponentsInChildren<SpriteRenderer>();
@@ -171,7 +280,7 @@ public class MainFlow : MonoBehaviour
             float eased = t * t;
 
             card.transform.position = Vector3.Lerp(startPos, targetWorld, eased);
-            card.transform.rotation = Quaternion.Slerp(card.transform.rotation, Quaternion.identity, t);
+            card.transform.rotation = startRot; // 회전 유지
             card.transform.localScale = Vector3.Lerp(startScale, startScale * 0.3f, eased);
 
             // 페이드 아웃: 후반부(40%~100%)에서 자연스럽게

@@ -121,6 +121,20 @@ public class OppDeck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  외부에서 카드 제거 (AI 배치 시 사용)
+    // ─────────────────────────────────────────
+    public void RemoveCard(GameObject card)
+    {
+        int idx = _spawnedCards.IndexOf(card);
+        if (idx < 0) return;
+
+        _spawnedCards.RemoveAt(idx);
+        _targetPositions.RemoveAt(idx);
+        _targetRotations.RemoveAt(idx);
+        UpdateAllTargets();
+    }
+
+    // ─────────────────────────────────────────
     //  내부: 카드 생성 (상호작용 컴포넌트 없음)
     // ─────────────────────────────────────────
     private GameObject SpawnCard(int value)

@@ -454,7 +454,7 @@ public class GameFlow : MonoBehaviour
     // ─────────────────────────────────────────
     //  핸드 평가 (우선순위 기반)
     // ─────────────────────────────────────────
-    private float EvaluateHand(int[] dice, out string ruleName)
+    public float EvaluateHand(int[] dice, out string ruleName)
     {
         ruleName = "";
         if (dice.Length == 0) return 0f;

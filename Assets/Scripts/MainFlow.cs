@@ -15,6 +15,7 @@ public class MainFlow : MonoBehaviour
     public Deck deck;
     public OppDeck oppDeck;
     public Slot[] playerSlots;
+    public Slot[] oppSlots;
 
     [Header("─ UI ─")]
     public Button endTurnButton;
@@ -82,15 +83,15 @@ public class MainFlow : MonoBehaviour
         // 슬롯에서 카드 수거
         List<GameObject> flyingCards = new List<GameObject>();
 
-        if (_isPlayerTurn)
+        Slot[] slotsToRelease = _isPlayerTurn ? playerSlots : oppSlots;
+        if (slotsToRelease != null)
         {
-            foreach (var slot in playerSlots)
+            foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
                 var card = slot.ReleaseCard();
                 if (card != null)
                 {
-                    // 날아가는 동안 최상위에 표시
                     foreach (var r in card.GetComponentsInChildren<Renderer>())
                         r.sortingOrder = 500;
                     flyingCards.Add(card);

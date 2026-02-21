@@ -6,6 +6,8 @@ public class Slot : MonoBehaviour
     private int _placedCardValue;
     private bool _placedCardIsJoker;
 
+    public bool allowReturn = true;
+
     public bool HasCard => _placedCard != null;
 
     void Awake()
@@ -16,7 +18,7 @@ public class Slot : MonoBehaviour
 
     void Update()
     {
-        if (_placedCard != null && Input.GetMouseButtonDown(1))
+        if (_placedCard != null && allowReturn && Input.GetMouseButtonDown(1))
         {
             Camera cam = Camera.main;
             if (cam == null) return;

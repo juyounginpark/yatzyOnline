@@ -30,6 +30,8 @@ public class OppDeck : MonoBehaviour
     private bool _isAnimating;
     private float _smoothSpeed = 10f;
 
+    // [버그 수정] OppAuto 참조 - 배치 중인 카드는 LateUpdate 회전 차단
+    private OppAuto _oppAuto;
     public bool IsAnimating => _isAnimating;
     public IReadOnlyList<GameObject> SpawnedCards => _spawnedCards;
 
@@ -51,6 +53,11 @@ public class OppDeck : MonoBehaviour
             }
         }
 
+        // OppAuto 참조 캐시 (LateUpdate 회전 차단용)
+        _oppAuto = GetComponentInParent<OppAuto>();
+        if (_oppAuto == null)
+            _oppAuto = FindObjectOfType<OppAuto>();
+
         DrawCards();
     }
 
@@ -61,6 +68,9 @@ public class OppDeck : MonoBehaviour
         for (int i = 0; i < _spawnedCards.Count; i++)
         {
             if (_spawnedCards[i] == null) continue;
+
+            // [버그 수정] AnimatePlace 중인 카드는 아치 위치/회전 덮어쓰지 않음
+            if (_oppAuto != null && _oppAuto.IsCardPlacing(_spawnedCards[i])) continue;
 
             var tr = _spawnedCards[i].transform;
             tr.localPosition = Vector3.Lerp(tr.localPosition, _targetPositions[i], t);

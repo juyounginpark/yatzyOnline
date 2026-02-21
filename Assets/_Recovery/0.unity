@@ -432,6 +432,9 @@ MonoBehaviour:
   showcaseSpacing: 1.2
   attackDuration: 0.4
   attackStagger: 0.06
+  hitShakeDuration: 0.35
+  hitShakeIntensity: 0.15
+  cameraShakeIntensity: 0.08
 --- !u!1001 &493968809
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -713,7 +716,7 @@ SpriteRenderer:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 558328319}
-  m_Enabled: 1
+  m_Enabled: 0
   m_CastShadows: 0
   m_ReceiveShadows: 0
   m_DynamicOccludee: 1
@@ -1066,13 +1069,9 @@ MonoBehaviour:
   mainFlow: {fileID: 484160619}
   oppDeck: {fileID: 913808643}
   gameFlow: {fileID: 484160618}
-  oppSlots:
-  - {fileID: 555618476}
-  - {fileID: 1808711093}
-  - {fileID: 976743763}
-  - {fileID: 604197498}
-  - {fileID: 222886491}
   placeDuration: 0.4
+  flipDuration: 0.5
+  flipStagger: 0.1
 --- !u!1 &976743760 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 8002144047082630695, guid: 0761b55c4f456e34292e813ab430c650, type: 3}
@@ -1135,7 +1134,7 @@ SpriteRenderer:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1083320155}
-  m_Enabled: 1
+  m_Enabled: 0
   m_CastShadows: 0
   m_ReceiveShadows: 0
   m_DynamicOccludee: 1

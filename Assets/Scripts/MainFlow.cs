@@ -20,6 +20,10 @@ public class MainFlow : MonoBehaviour
     [Header("─ UI ─")]
     public Button endTurnButton;
 
+    [Header("─ 참조 (점수 표시용) ─")]
+    public GameFlow gameFlow;
+    public GameUI gameUI;
+
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
 
@@ -55,6 +59,9 @@ public class MainFlow : MonoBehaviour
     private float _timer;
     private bool _isTransitioning;
 
+    // AI 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
+    private OppAuto _oppAuto;
+
     public bool IsPlayerTurn => _isPlayerTurn;
     public float TimeRemaining => Mathf.Max(0f, _timer);
     public bool IsTransitioning => _isTransitioning;
@@ -63,6 +70,9 @@ public class MainFlow : MonoBehaviour
     {
         _timer = turnTime;
         _isPlayerTurn = true;
+
+        // OppAuto 참조 캐시
+        _oppAuto = FindObjectOfType<OppAuto>();
 
         if (endTurnButton != null)
             endTurnButton.onClick.AddListener(EndTurn);
@@ -76,7 +86,14 @@ public class MainFlow : MonoBehaviour
 
         _timer -= Time.deltaTime;
         if (_timer <= 0f)
+        {
+            // 상대 턴이고 AI가 활동 중이면 타이머로 강제 전환하지 않음
+            // (AI가 배치/플립 완료 후 스스로 EndTurn 호출)
+            if (!_isPlayerTurn && _oppAuto != null && _oppAuto.IsActing)
+                return;
+
             EndTurn();
+        }
     }
 
     // ─────────────────────────────────────────
@@ -105,10 +122,28 @@ public class MainFlow : MonoBehaviour
             ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
             : (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform);
 
+        // ── 상대 턴 종료 시: 슬롯 카드 점수/콤보를 UI에 표시 ──
+        Slot[] slotsToRelease = _isPlayerTurn ? playerSlots : oppSlots;
+        if (!_isPlayerTurn && slotsToRelease != null)
+        {
+            float score = 0f;
+            string rule = "";
+            score = EvaluateSlots(slotsToRelease, out rule);
+
+            if (score > 0f && gameUI != null && gameUI.scoreText != null)
+            {
+                gameUI.isScoreOverridden = true;  // Update() 덮어쓰기 차단
+                gameUI.scoreText.gameObject.SetActive(true);
+                gameUI.scoreText.text = $"+{score:F1}\n({rule})";
+                yield return new WaitForSeconds(1f);
+                gameUI.scoreText.gameObject.SetActive(false);
+                gameUI.isScoreOverridden = false;  // 차단 해제
+            }
+        }
+
         // 슬롯에서 카드 수거
         List<GameObject> flyingCards = new List<GameObject>();
 
-        Slot[] slotsToRelease = _isPlayerTurn ? playerSlots : oppSlots;
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
@@ -166,6 +201,26 @@ public class MainFlow : MonoBehaviour
             oppDeck.AddOneCard();
 
         _isTransitioning = false;
+    }
+
+    // ─────────────────────────────────────────
+    //  슬롯 카드 평가 (점수 + 콤보 이름)
+    // ─────────────────────────────────────────
+    private float EvaluateSlots(Slot[] slots, out string ruleName)
+    {
+        ruleName = "";
+        if (gameFlow == null || slots == null) return 0f;
+
+        List<int> values = new List<int>();
+        foreach (var slot in slots)
+        {
+            if (slot == null || !slot.HasCard) continue;
+            var cv = slot.GetCardValue();
+            if (cv != null) values.Add(cv.value);
+        }
+
+        if (values.Count == 0) return 0f;
+        return gameFlow.EvaluateHand(values.ToArray(), out ruleName);
     }
 
     // ─────────────────────────────────────────

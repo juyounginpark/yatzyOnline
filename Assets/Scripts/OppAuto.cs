@@ -13,14 +13,21 @@ public class OppAuto : MonoBehaviour
     public OppDeck oppDeck;
     public GameFlow gameFlow;
 
-    [Header("─ 상대 슬롯 ─")]
-    public Slot[] oppSlots = new Slot[5];
-
     [Header("─ 배치 애니메이션 ─")]
     public float placeDuration = 0.4f;
 
+    [Header("─ 카드 공개 애니메이션 ─")]
+    [Tooltip("Y축 플립 시간 (절반은 닫기, 절반은 열기)")]
+    public float flipDuration = 0.5f;
+
+    [Tooltip("카드 간 플립 딜레이")]
+    public float flipStagger = 0.1f;
+
     // ─── 내부 상태 ───
     private bool _acting;
+
+    // MainFlow.oppSlots를 공유 참조
+    private Slot[] oppSlots => mainFlow != null ? mainFlow.oppSlots : null;
 
     void Update()
     {
@@ -48,33 +55,38 @@ public class OppAuto : MonoBehaviour
             yield break;
         }
 
-        // 그리디 최적 배치: 점수가 개선되는 한 계속 배치
-        while (true)
+        // ── 1단계: 뒷면 상태로 전부 배치 ──
+        List<GameObject> placedCards = new List<GameObject>();
+
+        while (oppSlots != null)
         {
-            // 턴 체크
             if (mainFlow.IsPlayerTurn || mainFlow.IsTransitioning) break;
 
             var best = FindBestPlacement();
             if (best == null) break;
 
-            // 덱에서 카드 제거 (나머지 카드 자동 재배치)
             oppDeck.RemoveCard(best.Value.card);
 
-            // 배치 애니메이션
+            // 배치 애니메이션 (뒷면 유지)
             yield return StartCoroutine(AnimatePlace(best.Value.card, best.Value.slot));
 
-            // 스프라이트 교체: 뒷면 → 숫자 카드
-            SwapToFaceSprite(best.Value.card);
-
-            // 슬롯에 배치
+            // 슬롯에 배치 (뒷면 그대로)
             best.Value.slot.PlaceCard(best.Value.card);
+            placedCards.Add(best.Value.card);
 
             // 연속 배치 사이 짧은 대기
             yield return new WaitForSeconds(0.3f);
         }
 
-        // 배치 완료 후 대기 → 턴 종료
-        yield return new WaitForSeconds(0.5f);
+        // ── 2단계: Y축 플립으로 앞면 공개 ──
+        if (placedCards.Count > 0)
+        {
+            yield return new WaitForSeconds(0.3f);
+            yield return StartCoroutine(RevealAllCards(placedCards));
+        }
+
+        // 플립 완료 후 짧은 딜레이 → 턴 종료 (중앙으로 이동)
+        yield return new WaitForSeconds(0.2f);
 
         if (!mainFlow.IsPlayerTurn && !mainFlow.IsTransitioning)
             mainFlow.EndTurn();
@@ -197,6 +209,71 @@ public class OppAuto : MonoBehaviour
 
         card.transform.position = endPos;
         card.transform.rotation = Quaternion.identity;
+    }
+
+    // ─────────────────────────────────────────
+    //  Y축 플립 공개: 전체 카드 순차 플립
+    // ─────────────────────────────────────────
+    private IEnumerator RevealAllCards(List<GameObject> cards)
+    {
+        List<Coroutine> flips = new List<Coroutine>();
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (cards[i] == null) continue;
+            flips.Add(StartCoroutine(FlipOneCard(cards[i])));
+            if (i < cards.Count - 1)
+                yield return new WaitForSeconds(flipStagger);
+        }
+
+        // 마지막 플립 완료 대기
+        if (flips.Count > 0)
+            yield return flips[flips.Count - 1];
+    }
+
+    // ─────────────────────────────────────────
+    //  Y축 플립: scale.x로 뒤집기 연출
+    //  1→0 (닫기) → 스프라이트 교체 → 0→1 (열기)
+    // ─────────────────────────────────────────
+    private IEnumerator FlipOneCard(GameObject card)
+    {
+        float halfDuration = flipDuration * 0.5f;
+        Vector3 originalScale = card.transform.localScale;
+
+        // ── 닫기: scale.x → 0 ──
+        float elapsed = 0f;
+        while (elapsed < halfDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / halfDuration);
+            float eased = t * t; // ease-in
+
+            Vector3 s = originalScale;
+            s.x = Mathf.Lerp(originalScale.x, 0f, eased);
+            card.transform.localScale = s;
+
+            yield return null;
+        }
+
+        // ── 스프라이트 교체 (카드가 옆면이라 안 보이는 순간) ──
+        SwapToFaceSprite(card);
+
+        // ── 열기: scale.x 0 → 원래 ──
+        elapsed = 0f;
+        while (elapsed < halfDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / halfDuration);
+            float eased = 1f - (1f - t) * (1f - t); // ease-out
+
+            Vector3 s = originalScale;
+            s.x = Mathf.Lerp(0f, originalScale.x, eased);
+            card.transform.localScale = s;
+
+            yield return null;
+        }
+
+        // 최종 보정
+        card.transform.localScale = originalScale;
     }
 
     // ─────────────────────────────────────────

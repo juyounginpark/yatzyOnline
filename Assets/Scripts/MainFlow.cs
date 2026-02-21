@@ -143,6 +143,16 @@ public class MainFlow : MonoBehaviour
             yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity));
         }
 
+        // 안전 정리: 슬롯에 남은 카드 강제 제거
+        if (slotsToRelease != null)
+        {
+            foreach (var slot in slotsToRelease)
+            {
+                if (slot != null && slot.HasCard)
+                    slot.ClearCard();
+            }
+        }
+
         // 턴 전환
         _isPlayerTurn = !_isPlayerTurn;
         _timer = turnTime;

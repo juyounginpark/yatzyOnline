@@ -3,6 +3,7 @@ using UnityEngine;
 public enum CardType
 {
     Attack,
+    Critical,
     Heal
 }
 

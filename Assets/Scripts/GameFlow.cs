@@ -222,7 +222,45 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  슬롯 조합 기여 계산 (래퍼) — 조커 해석 포함
+    //  외부용: 슬롯 배열에서 조커 해석 포함 최고 점수 계산
+    // ─────────────────────────────────────────
+    public void GetBestCombo(Slot[] targetSlots, out string bestComboName, out float bestComboScore)
+    {
+        int[] dummy;
+        GetBestCombo(targetSlots, out bestComboName, out bestComboScore, out dummy);
+    }
+
+    public void GetBestCombo(Slot[] targetSlots, out string bestComboName, out float bestComboScore, out int[] resolvedValues)
+    {
+        bestComboName = "";
+        bestComboScore = 0f;
+
+        int[] slotValues = new int[targetSlots.Length];
+        bool[] jokerFlags = new bool[targetSlots.Length];
+        for (int i = 0; i < targetSlots.Length; i++)
+        {
+            if (targetSlots[i] != null && targetSlots[i].HasCard)
+            {
+                var cv = targetSlots[i].GetCardValue();
+                if (cv != null)
+                {
+                    jokerFlags[i] = cv.isJoker;
+                    slotValues[i] = cv.isJoker ? 0 : cv.value;
+                }
+            }
+        }
+        resolvedValues = ResolveJokersOptimal(slotValues, jokerFlags);
+
+        List<int> filled = new List<int>();
+        for (int i = 0; i < resolvedValues.Length; i++)
+            if (resolvedValues[i] > 0) filled.Add(resolvedValues[i]);
+
+        if (filled.Count > 0)
+            bestComboScore = EvaluateHand(filled.ToArray(), out bestComboName);
+    }
+
+    // ─────────────────────────────────────────
+    //  슬롯 조합 기여 계산 (내부) — 조커 해석 포함
     // ─────────────────────────────────────────
     private bool[] GetContributingSlots(out string bestComboName, out float bestComboScore)
     {

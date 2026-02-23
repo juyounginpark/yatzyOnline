@@ -21,6 +21,12 @@ public class MainFlow : MonoBehaviour
     [Header("─ UI ─")]
     public Button endTurnButton;
     public TMP_Text endTurnButtonText;
+    public Button sortByNumButton;
+    public Button sortByTypeButton;
+
+    [Header("─ UI 캔버스 ─")]
+    [Tooltip("버튼 UI가 카드 위에 표시되도록 Canvas 설정")]
+    public Canvas uiCanvas;
 
     [Header("─ 참조 (점수 표시용) ─")]
     public GameFlow gameFlow;
@@ -94,6 +100,22 @@ public class MainFlow : MonoBehaviour
 
         if (endTurnButton != null)
             endTurnButton.onClick.AddListener(EndTurn);
+
+        if (sortByNumButton != null)
+            sortByNumButton.onClick.AddListener(() => { if (deck != null && _isPlayerTurn && !_isTransitioning) deck.SortByNumber(); });
+
+        if (sortByTypeButton != null)
+            sortByTypeButton.onClick.AddListener(() => { if (deck != null && _isPlayerTurn && !_isTransitioning) deck.SortByType(); });
+
+        // UI Canvas가 카드 아래에 표시되도록 설정
+        if (uiCanvas == null && endTurnButton != null)
+            uiCanvas = endTurnButton.GetComponentInParent<Canvas>();
+        if (uiCanvas != null)
+        {
+            uiCanvas.renderMode = RenderMode.ScreenSpaceCamera;
+            uiCanvas.worldCamera = Camera.main;
+            uiCanvas.sortingOrder = 0;
+        }
 
         UpdateInteraction();
 
@@ -171,8 +193,26 @@ public class MainFlow : MonoBehaviour
             }
         }
 
-        // 슬롯에서 카드 수거 (Attack / Heal 분리)
+        // 조커 해석 값을 카드에 할당 (정렬용)
+        int[] resolvedValues = null;
+        if (slotsToRelease != null && gameFlow != null)
+        {
+            string dummyName;
+            float dummyScore;
+            gameFlow.GetBestCombo(slotsToRelease, out dummyName, out dummyScore, out resolvedValues);
+
+            for (int i = 0; i < slotsToRelease.Length; i++)
+            {
+                if (slotsToRelease[i] == null || !slotsToRelease[i].HasCard) continue;
+                var cv = slotsToRelease[i].GetCardValue();
+                if (cv != null && cv.isJoker && resolvedValues != null && i < resolvedValues.Length)
+                    cv.value = resolvedValues[i];
+            }
+        }
+
+        // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리)
         List<GameObject> attackCards = new List<GameObject>();
+        List<GameObject> criticalCards = new List<GameObject>();
         List<GameObject> healCards = new List<GameObject>();
 
         if (slotsToRelease != null)
@@ -189,6 +229,8 @@ public class MainFlow : MonoBehaviour
                         r.sortingOrder = 500;
                     if (type == CardType.Heal)
                         healCards.Add(card);
+                    else if (type == CardType.Critical)
+                        criticalCards.Add(card);
                     else
                         attackCards.Add(card);
                 }
@@ -197,6 +239,7 @@ public class MainFlow : MonoBehaviour
 
         List<GameObject> allCards = new List<GameObject>();
         allCards.AddRange(attackCards);
+        allCards.AddRange(criticalCards);
         allCards.AddRange(healCards);
 
         if (allCards.Count > 0)
@@ -215,15 +258,15 @@ public class MainFlow : MonoBehaviour
                 yield return StartCoroutine(SortShowcaseBy(allCards, showcaseCenter, SortByType));
 
                 // 카드 숫자가 전부 동일하지 않을 때만 2단계 정렬
-                bool allSameIndex = true;
-                int firstIndex = allCards[0] != null ? allCards[0].GetComponent<CardValue>()?.poolIndex ?? 0 : 0;
+                bool allSameValue = true;
+                int firstValue = allCards[0] != null ? allCards[0].GetComponent<CardValue>()?.value ?? 0 : 0;
                 for (int i = 1; i < allCards.Count; i++)
                 {
-                    int idx = allCards[i] != null ? allCards[i].GetComponent<CardValue>()?.poolIndex ?? 0 : 0;
-                    if (idx != firstIndex) { allSameIndex = false; break; }
+                    int val = allCards[i] != null ? allCards[i].GetComponent<CardValue>()?.value ?? 0 : 0;
+                    if (val != firstValue) { allSameValue = false; break; }
                 }
 
-                if (!allSameIndex)
+                if (!allSameValue)
                 {
                     yield return new WaitForSeconds(0.7f);
 
@@ -234,42 +277,54 @@ public class MainFlow : MonoBehaviour
 
             yield return new WaitForSeconds(showcaseTime);
 
-            // Attack 카드 → 상대 덱으로, Heal 카드 → 자기 덱으로
+            // Attack/Critical 카드 → 상대 덱으로, Heal 카드 → 자기 덱으로
+            List<GameObject> allAttackCards = new List<GameObject>();
+            allAttackCards.AddRange(attackCards);
+            allAttackCards.AddRange(criticalCards);
+
             Coroutine attackFly = null, healFly = null;
-            if (attackCards.Count > 0)
-                attackFly = StartCoroutine(FlyAndHit(attackCards, target.position));
+            if (allAttackCards.Count > 0)
+                attackFly = StartCoroutine(FlyAndHit(allAttackCards, target.position));
             if (healCards.Count > 0)
                 healFly = StartCoroutine(FlyAndHit(healCards, mySpawn.position));
 
             if (attackFly != null) yield return attackFly;
             if (healFly != null) yield return healFly;
 
-            // 피격 연출 (Attack 카드가 있을 때만)
-            if (attackCards.Count > 0)
-            {
-                StartCoroutine(ShakeTransform(target, hitShakeDuration, hitShakeIntensity));
-                yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity));
-            }
-
-            // HP 처리: 카드 비율에 따라 데미지 / 회복 분배
+            // HP 처리: 카드 비율에 따라 데미지 / 회복 분배 (Critical은 2배 데미지)
             if (hp != null && turnScore > 0f)
             {
-                int totalCount = attackCards.Count + healCards.Count;
+                int totalCount = attackCards.Count + criticalCards.Count + healCards.Count;
                 float attackRatio = (float)attackCards.Count / totalCount;
+                float criticalRatio = (float)criticalCards.Count / totalCount;
                 float healRatio = (float)healCards.Count / totalCount;
 
                 float attackScore = turnScore * attackRatio;
-                float healScore = turnScore * healRatio * 0.5f; // 힐 계수 1/2
+                float criticalScore = turnScore * criticalRatio * 2f; // 크리티컬 2배
+                float totalAttackScore = attackScore + criticalScore;
+                float healScore = turnScore * healRatio;
 
-                if (attackScore > 0f)
+                // 피격 연출 (Attack/Critical 카드가 있을 때만, 10단위로 강도 증가)
+                if (allAttackCards.Count > 0)
+                {
+                    float shakeMult = Mathf.Max(1f, Mathf.Floor(totalAttackScore / 10f));
+                    StartCoroutine(ShakeTransform(target, hitShakeDuration, hitShakeIntensity * shakeMult));
+                    yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity * shakeMult));
+                }
+
+                if (totalAttackScore > 0f)
                 {
                     if (_isPlayerTurn)
-                        hp.DamageOpp(attackScore);
+                        hp.DamageOpp(totalAttackScore);
                     else
-                        hp.DamagePlayer(attackScore);
+                        hp.DamagePlayer(totalAttackScore);
                 }
                 if (healScore > 0f)
                 {
+                    // 힐 연출: 초록빛 웨이브 (힐량 비례)
+                    var deckCards = _isPlayerTurn ? deck.SpawnedCards : oppDeck.SpawnedCards;
+                    yield return StartCoroutine(HealGreenWave(deckCards, healScore));
+
                     if (_isPlayerTurn)
                         hp.HealPlayer(healScore);
                     else
@@ -413,16 +468,12 @@ public class MainFlow : MonoBehaviour
         ruleName = "";
         if (gameFlow == null || slots == null) return 0f;
 
-        List<int> values = new List<int>();
-        foreach (var slot in slots)
-        {
-            if (slot == null || !slot.HasCard) continue;
-            var cv = slot.GetCardValue();
-            if (cv != null) values.Add(cv.value);
-        }
-
-        if (values.Count == 0) return 0f;
-        return gameFlow.EvaluateHand(values.ToArray(), out ruleName);
+        // GameFlow의 GetContributingSlots와 동일하게 조커 최적 해석 사용
+        string comboName;
+        float comboScore;
+        gameFlow.GetBestCombo(slots, out comboName, out comboScore);
+        ruleName = comboName;
+        return comboScore;
     }
 
     // ─────────────────────────────────────────
@@ -542,7 +593,7 @@ public class MainFlow : MonoBehaviour
         }
     }
 
-    // ── 정렬 비교 함수: 타입별 (Attack → Heal) ──
+    // ── 정렬 비교 함수: 타입별 (Attack → Critical → Heal) ──
     private static int SortByType(GameObject a, GameObject b)
     {
         var cva = a != null ? a.GetComponent<CardValue>() : null;
@@ -552,17 +603,14 @@ public class MainFlow : MonoBehaviour
         return ta.CompareTo(tb);
     }
 
-    // ── 정렬 비교 함수: 타입별 → 덱 인덱스별 ──
+    // ── 정렬 비교 함수: 숫자별 (타입 무관) ──
     private static int SortByTypeAndValue(GameObject a, GameObject b)
     {
         var cva = a != null ? a.GetComponent<CardValue>() : null;
         var cvb = b != null ? b.GetComponent<CardValue>() : null;
-        int ta = cva != null ? (int)cva.cardType : 0;
-        int tb = cvb != null ? (int)cvb.cardType : 0;
-        if (ta != tb) return ta.CompareTo(tb);
-        int pa = cva != null ? cva.poolIndex : 0;
-        int pb = cvb != null ? cvb.poolIndex : 0;
-        return pa.CompareTo(pb);
+        int va = cva != null ? cva.value : 0;
+        int vb = cvb != null ? cvb.value : 0;
+        return va.CompareTo(vb);
     }
 
     // ─────────────────────────────────────────
@@ -656,6 +704,76 @@ public class MainFlow : MonoBehaviour
 
         Destroy(card);
     }
+
+    // ─────────────────────────────────────────
+    //  힐 연출: 위→아래 초록빛 웨이브
+    // ─────────────────────────────────────────
+    private IEnumerator HealGreenWave(IReadOnlyList<GameObject> cards, float healAmount)
+    {
+        if (cards == null || cards.Count == 0) yield break;
+
+        float intensity = Mathf.Clamp01(healAmount / 30f); // 힐량 비례 (30이면 최대)
+        Color greenTint = new Color(0f, 1f, 0.3f, intensity * 0.7f);
+        float duration = 0.4f + intensity * 0.3f; // 0.4~0.7초
+
+        // 각 카드의 SpriteRenderer와 원래 색상 저장
+        var renderers = new List<List<SpriteRenderer>>();
+        var originalColors = new List<List<Color>>();
+        var cardBounds = new List<float>(); // 각 카드의 상단 y (로컬)
+
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (cards[i] == null) { renderers.Add(null); originalColors.Add(null); cardBounds.Add(0f); continue; }
+            var srs = new List<SpriteRenderer>(cards[i].GetComponentsInChildren<SpriteRenderer>());
+            var cols = new List<Color>();
+            foreach (var sr in srs) cols.Add(sr.color);
+            renderers.Add(srs);
+            originalColors.Add(cols);
+
+            var mainSr = cards[i].GetComponentInChildren<SpriteRenderer>();
+            cardBounds.Add(mainSr != null && mainSr.sprite != null
+                ? mainSr.sprite.bounds.extents.y * mainSr.transform.lossyScale.y
+                : 0.5f);
+        }
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float progress = Mathf.Clamp01(elapsed / duration); // 0→1 (위→아래)
+
+            for (int i = 0; i < cards.Count; i++)
+            {
+                if (renderers[i] == null) continue;
+                for (int j = 0; j < renderers[i].Count; j++)
+                {
+                    if (renderers[i][j] == null) continue;
+
+                    // 스프라이트 로컬 y 기준으로 위→아래 sweep
+                    float spriteY = renderers[i][j].transform.localPosition.y;
+                    float normalizedY = Mathf.Clamp01((cardBounds[i] - spriteY) / (cardBounds[i] * 2f));
+                    float wave = Mathf.Clamp01(1f - Mathf.Abs(progress - normalizedY) * 4f);
+
+                    Color c = originalColors[i][j];
+                    renderers[i][j].color = Color.Lerp(c, new Color(c.r * 0.5f, 1f, c.g * 0.5f + 0.3f, c.a), wave * intensity);
+                }
+            }
+            yield return null;
+        }
+
+        // 원래 색상 복원
+        for (int i = 0; i < cards.Count; i++)
+        {
+            if (renderers[i] == null) continue;
+            for (int j = 0; j < renderers[i].Count; j++)
+            {
+                if (renderers[i][j] != null)
+                    renderers[i][j].color = originalColors[i][j];
+            }
+        }
+    }
+
+
 
     // ─────────────────────────────────────────
     //  피격 연출: 덱 흔들림

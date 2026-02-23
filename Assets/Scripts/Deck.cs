@@ -461,6 +461,45 @@ public class Deck : MonoBehaviour
 
 
     // ─────────────────────────────────────────
+    //  손패 정렬: 숫자순
+    // ─────────────────────────────────────────
+    public void SortByNumber()
+    {
+        if (_isAnimating || _spawnedCards.Count <= 1) return;
+        _spawnedCards.Sort((a, b) =>
+        {
+            var cva = a != null ? a.GetComponent<CardValue>() : null;
+            var cvb = b != null ? b.GetComponent<CardValue>() : null;
+            int va = cva != null ? cva.value : 0;
+            int vb = cvb != null ? cvb.value : 0;
+            return va.CompareTo(vb);
+        });
+        UpdateAllCardBases();
+        TriggerWaveAll(null);
+    }
+
+    // ─────────────────────────────────────────
+    //  손패 정렬: 타입순 (같은 타입 내 숫자순)
+    // ─────────────────────────────────────────
+    public void SortByType()
+    {
+        if (_isAnimating || _spawnedCards.Count <= 1) return;
+        _spawnedCards.Sort((a, b) =>
+        {
+            var cva = a != null ? a.GetComponent<CardValue>() : null;
+            var cvb = b != null ? b.GetComponent<CardValue>() : null;
+            int ta = cva != null ? (int)cva.cardType : 0;
+            int tb = cvb != null ? (int)cvb.cardType : 0;
+            if (ta != tb) return ta.CompareTo(tb);
+            int va = cva != null ? cva.value : 0;
+            int vb = cvb != null ? cvb.value : 0;
+            return va.CompareTo(vb);
+        });
+        UpdateAllCardBases();
+        TriggerWaveAll(null);
+    }
+
+    // ─────────────────────────────────────────
     //  유효한 프리팹 풀 수집
     // ─────────────────────────────────────────
     private List<CardPool> BuildPrefabPool()

@@ -103,8 +103,20 @@ public class OppDeck : MonoBehaviour
         if (cardBackPrefab == null) return;
         if (_spawnedCards.Count >= deck.maxCards) return;
 
+        // 플레이어 덱 풀에서 랜덤 타입 선택
+        CardType type = GetRandomType();
         int value = Random.Range(1, 7);
-        SpawnCard(value);
+        SpawnCard(value, type);
+        UpdateAllTargets();
+    }
+
+    // ─────────────────────────────────────────
+    //  특정 값 카드 추가 (슬롯 복귀용)
+    // ─────────────────────────────────────────
+    public void AddCardByValue(int value, CardType cardType = CardType.Attack)
+    {
+        if (cardBackPrefab == null) return;
+        SpawnCard(value, cardType);
         UpdateAllTargets();
     }
 
@@ -147,7 +159,7 @@ public class OppDeck : MonoBehaviour
     // ─────────────────────────────────────────
     //  내부: 카드 생성 (상호작용 컴포넌트 없음)
     // ─────────────────────────────────────────
-    private GameObject SpawnCard(int value)
+    private GameObject SpawnCard(int value, CardType cardType = CardType.Attack)
     {
         GameObject card = Instantiate(cardBackPrefab, Parent);
         card.transform.localPosition = deck.spawnOffset * -1f;
@@ -156,6 +168,7 @@ public class OppDeck : MonoBehaviour
         var cv = card.GetComponent<CardValue>();
         if (cv == null) cv = card.AddComponent<CardValue>();
         cv.value = value;
+        cv.cardType = cardType;
 
         _spawnedCards.Add(card);
         _targetPositions.Add(card.transform.localPosition);
@@ -174,7 +187,7 @@ public class OppDeck : MonoBehaviour
         for (int i = 0; i < drawCount; i++)
         {
             int value = Random.Range(1, 7);
-            SpawnCard(value);
+            SpawnCard(value, GetRandomType());
             UpdateAllTargets();
 
             yield return new WaitForSeconds(deck.dealDelay);
@@ -223,5 +236,15 @@ public class OppDeck : MonoBehaviour
 
         // 회전도 반전 (카드가 아치 곡선을 따라감)
         rot = Quaternion.Euler(0f, 0f, angleDeg);
+    }
+
+    // ─────────────────────────────────────────
+    //  덱 그룹에서 랜덤 타입 선택
+    // ─────────────────────────────────────────
+    private CardType GetRandomType()
+    {
+        if (deck == null || deck.deckGroups == null || deck.deckGroups.Length == 0)
+            return CardType.Attack;
+        return deck.deckGroups[Random.Range(0, deck.deckGroups.Length)].groupType;
     }
 }

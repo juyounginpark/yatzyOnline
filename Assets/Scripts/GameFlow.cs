@@ -352,6 +352,22 @@ public class GameFlow : MonoBehaviour
             case "스트레이트(로우)":
                 result = MarkSlotsInSet(values, new HashSet<int> { 1, 2, 3, 4, 5 });
                 break;
+            case "스몰스트레이트":
+            {
+                HashSet<int> unique = new HashSet<int>();
+                for (int i = 0; i < values.Length; i++)
+                    if (values[i] > 0) unique.Add(values[i]);
+                HashSet<int> matched = null;
+                if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6))
+                    matched = new HashSet<int> { 3, 4, 5, 6 };
+                else if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5))
+                    matched = new HashSet<int> { 2, 3, 4, 5 };
+                else if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4))
+                    matched = new HashSet<int> { 1, 2, 3, 4 };
+                if (matched != null)
+                    result = MarkSlotsInSet(values, matched);
+                break;
+            }
             case "트리플":
             {
                 int val = 0;
@@ -385,8 +401,13 @@ public class GameFlow : MonoBehaviour
                 break;
             }
             case "하이카드":
-                result = MarkAllFilled(values);
+            {
+                int highVal = 0;
+                for (int i = 0; i < values.Length; i++)
+                    if (values[i] > highVal) highVal = values[i];
+                result = MarkSlots(values, v => v == highVal, 1);
                 break;
+            }
         }
 
         return result;
@@ -480,6 +501,9 @@ public class GameFlow : MonoBehaviour
         score = ScoreStraightLow(sorted);
         if (score > 0f) { ruleName = "스트레이트(로우)"; return score; }
 
+        score = ScoreSmallStraight(sorted);
+        if (score > 0f) { ruleName = "스몰스트레이트"; return score; }
+
         score = ScoreTriple(counts);
         if (score > 0f) { ruleName = "트리플"; return score; }
 
@@ -544,23 +568,37 @@ public class GameFlow : MonoBehaviour
         return (tripleVal > 0 && pairVal > 0) ? 65f + tripleVal * 1f + pairVal * 0.1f : 0f;
     }
 
-    // 스트레이트(하이): 2,3,4,5,6 → 58
+    // 스트레이트(하이): 2,3,4,5,6 → 70
     private float ScoreStraightHigh(int[] sorted)
     {
         HashSet<int> unique = new HashSet<int>(sorted);
         if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4)
             && unique.Contains(5) && unique.Contains(6))
-            return 58f;
+            return 70f;
         return 0f;
     }
 
-    // 스트레이트(로우): 1,2,3,4,5 → 55
+    // 스트레이트(로우): 1,2,3,4,5 → 65
     private float ScoreStraightLow(int[] sorted)
     {
         HashSet<int> unique = new HashSet<int>(sorted);
         if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3)
             && unique.Contains(4) && unique.Contains(5))
-            return 55f;
+            return 65f;
+        return 0f;
+    }
+
+    // 스몰스트레이트(4연속): 56 + 최고값 × 0.5
+    private float ScoreSmallStraight(int[] sorted)
+    {
+        HashSet<int> unique = new HashSet<int>(sorted);
+        // 높은 쪽부터 체크 (3456 → 2345 → 1234)
+        if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6))
+            return 56f + 6 * 0.5f;  // 59
+        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5))
+            return 56f + 5 * 0.5f;  // 58.5
+        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4))
+            return 56f + 4 * 0.5f;  // 58
         return 0f;
     }
 

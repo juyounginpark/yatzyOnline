@@ -25,9 +25,11 @@ public class OppAuto : MonoBehaviour
 
     // ─── 내부 상태 ───
     private bool _acting;
+    private bool _animating;   // 카드 배치/플립 애니메이션 중
 
     // MainFlow에서 AI 활동 상태 확인용
     public bool IsActing => _acting;
+    public bool IsAnimating => _animating;
 
     // 현재 AnimatePlace 중인 카드 (LateUpdate 회전 차단용)
     private readonly HashSet<GameObject> _placingCards = new HashSet<GameObject>();
@@ -67,6 +69,8 @@ public class OppAuto : MonoBehaviour
         // ── 1단계: 뒷면 상태로 배치 ──
         List<GameObject> placedCards = new List<GameObject>();
 
+        _animating = true;  // 카드 애니메이션 시작 → 타이머 일시정지
+
         for (int i = 0; i < placements.Count; i++)
         {
             if (mainFlow.IsPlayerTurn) break;
@@ -89,6 +93,8 @@ public class OppAuto : MonoBehaviour
             yield return new WaitForSeconds(0.3f);
             yield return StartCoroutine(RevealAllCards(placedCards));
         }
+
+        _animating = false;  // 카드 애니메이션 종료 → 타이머 재개
 
         // 플립 완료 후 짧은 딜레이 → 턴 종료
         yield return new WaitForSeconds(0.2f);
@@ -247,11 +253,12 @@ public class OppAuto : MonoBehaviour
     {
         switch (rule)
         {
-            case "파이브카드":       return 8;
-            case "포카드":          return 7;
-            case "풀하우스":        return 6;
-            case "스트레이트(하이)": return 5;
-            case "스트레이트(로우)": return 4;
+            case "파이브카드":       return 9;
+            case "포카드":          return 8;
+            case "풀하우스":        return 7;
+            case "스트레이트(하이)": return 6;
+            case "스트레이트(로우)": return 5;
+            case "스몰스트레이트":   return 4;
             case "트리플":          return 3;
             case "투페어":          return 2;
             case "원페어":          return 1;
@@ -451,7 +458,19 @@ public class OppAuto : MonoBehaviour
         var groups = oppDeck.deck.deckGroups;
         if (groups == null || groups.Length == 0) return;
 
-        var cards = groups[0].cards;
+        // 카드 타입에 맞는 그룹 찾기
+        DeckGroup matchedGroup = null;
+        foreach (var g in groups)
+        {
+            if (g != null && g.groupType == cv.cardType)
+            {
+                matchedGroup = g;
+                break;
+            }
+        }
+        if (matchedGroup == null) matchedGroup = groups[0];
+
+        var cards = matchedGroup.cards;
         if (cards == null || value - 1 >= cards.Length) return;
 
         var prefab = cards[value - 1].prefab;

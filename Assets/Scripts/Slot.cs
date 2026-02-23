@@ -5,6 +5,7 @@ public class Slot : MonoBehaviour
     private GameObject _placedCard;
     private int _placedCardValue;
     private bool _placedCardIsJoker;
+    private CardType _placedCardType;
 
     public bool allowReturn = true;
 
@@ -39,6 +40,7 @@ public class Slot : MonoBehaviour
         var cv = card.GetComponent<CardValue>();
         _placedCardValue = cv != null ? cv.value : 0;
         _placedCardIsJoker = cv != null && cv.isJoker;
+        _placedCardType = cv != null ? cv.cardType : CardType.Attack;
 
         card.transform.SetParent(transform);
         card.transform.localPosition = Vector3.zero;
@@ -99,14 +101,15 @@ public class Slot : MonoBehaviour
 
         bool isJoker = _placedCardIsJoker;
         int value = _placedCardValue;
+        CardType type = _placedCardType;
 
         Destroy(_placedCard);
         _placedCard = null;
 
         if (isJoker)
-            deck.AddJokerCard();
+            deck.AddJokerCard(type);
         else
-            deck.AddCardByValue(value);
+            deck.AddCardByValue(value, type);
     }
 
     private void FitToSlot(GameObject card)

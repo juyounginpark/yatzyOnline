@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 // ─────────────────────────────────────────────
 //  메인 턴 관리
@@ -19,10 +20,12 @@ public class MainFlow : MonoBehaviour
 
     [Header("─ UI ─")]
     public Button endTurnButton;
+    public TMP_Text endTurnButtonText;
 
     [Header("─ 참조 (점수 표시용) ─")]
     public GameFlow gameFlow;
     public GameUI gameUI;
+    public HP hp;
 
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
@@ -33,6 +36,9 @@ public class MainFlow : MonoBehaviour
 
     [Tooltip("쇼케이스 위치로 이동 시간")]
     public float showcaseMoveDuration = 0.5f;
+
+    [Tooltip("정렬 애니메이션 시간")]
+    public float showcaseSortDuration = 0.4f;
 
     [Tooltip("쇼케이스 카드 간 간격")]
     public float showcaseSpacing = 1.2f;
@@ -68,6 +74,8 @@ public class MainFlow : MonoBehaviour
     private bool _isPlayerTurn = true;
     private float _timer;
     private bool _isTransitioning;
+    private int _playerNextDraw = 1;
+    private int _oppNextDraw = 1;
 
     // AI 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
     private OppAuto _oppAuto;
@@ -98,14 +106,18 @@ public class MainFlow : MonoBehaviour
     {
         if (_isTransitioning) return;
 
-        _timer -= Time.deltaTime;
-        if (_timer <= 0f)
-        {
-            // 상대 턴이고 AI가 활동 중이면 타이머로 강제 전환하지 않음
-            // (AI가 배치/플립 완료 후 스스로 EndTurn 호출)
-            if (!_isPlayerTurn && _oppAuto != null && _oppAuto.IsActing)
-                return;
+        // 상대 턴이고 AI가 카드 애니메이션 중이면 타이머 일시정지
+        bool oppAnimating = !_isPlayerTurn && _oppAuto != null && _oppAuto.IsAnimating;
 
+        if (!oppAnimating)
+            _timer -= Time.deltaTime;
+
+        // 버튼 텍스트에 남은 시간 표시 (전환 중이 아닐 때만)
+        if (endTurnButtonText != null && !_isTransitioning)
+            endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
+
+        if (_timer <= 0f && !oppAnimating)
+        {
             EndTurn();
         }
     }
@@ -116,6 +128,10 @@ public class MainFlow : MonoBehaviour
     public void EndTurn()
     {
         if (_isTransitioning) return;
+        if (endTurnButtonText != null)
+            endTurnButtonText.text = "...";
+        if (endTurnButton != null)
+            endTurnButton.gameObject.SetActive(false);
         StartCoroutine(DoEndTurn());
     }
 
@@ -136,69 +152,178 @@ public class MainFlow : MonoBehaviour
             ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
             : (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform);
 
-        // ── 상대 턴 종료 시: 슬롯 카드 점수/콤보를 UI에 표시 ──
+        // ── 슬롯 카드 점수 계산 + UI 표시 + HP 차감 ──
         Slot[] slotsToRelease = _isPlayerTurn ? playerSlots : oppSlots;
-        if (!_isPlayerTurn && slotsToRelease != null)
+        float turnScore = 0f;
+        string turnRule = "";
+        if (slotsToRelease != null)
         {
-            float score = 0f;
-            string rule = "";
-            score = EvaluateSlots(slotsToRelease, out rule);
+            turnScore = EvaluateSlots(slotsToRelease, out turnRule);
 
-            if (score > 0f && gameUI != null && gameUI.scoreText != null)
+            if (turnScore > 0f && gameUI != null && gameUI.scoreText != null)
             {
-                gameUI.isScoreOverridden = true;  // Update() 덮어쓰기 차단
+                gameUI.isScoreOverridden = true;
                 gameUI.scoreText.gameObject.SetActive(true);
-                gameUI.scoreText.text = $"+{score:F1}\n({rule})";
+                gameUI.scoreText.text = $"+{turnScore:F1}\n({turnRule})";
                 yield return new WaitForSeconds(1f);
                 gameUI.scoreText.gameObject.SetActive(false);
-                gameUI.isScoreOverridden = false;  // 차단 해제
+                gameUI.isScoreOverridden = false;
             }
         }
 
-        // 슬롯에서 카드 수거
-        List<GameObject> flyingCards = new List<GameObject>();
+        // 슬롯에서 카드 수거 (Attack / Heal 분리)
+        List<GameObject> attackCards = new List<GameObject>();
+        List<GameObject> healCards = new List<GameObject>();
 
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
+                var cv = slot.GetCardValue();
+                CardType type = cv != null ? cv.cardType : CardType.Attack;
                 var card = slot.ReleaseCard();
                 if (card != null)
                 {
                     foreach (var r in card.GetComponentsInChildren<Renderer>())
                         r.sortingOrder = 500;
-                    flyingCards.Add(card);
+                    if (type == CardType.Heal)
+                        healCards.Add(card);
+                    else
+                        attackCards.Add(card);
                 }
             }
         }
 
-        if (flyingCards.Count > 0)
+        List<GameObject> allCards = new List<GameObject>();
+        allCards.AddRange(attackCards);
+        allCards.AddRange(healCards);
+
+        if (allCards.Count > 0)
         {
-            // 쇼케이스: PlayerSpawn과 OppSpawn 중간 지점에 카드 나열
+            // 쇼케이스: 중간 지점에 전체 카드 나열
             Vector3 showcaseCenter = (mySpawn.position + target.position) * 0.5f;
             showcaseCenter.z = 0f;
 
-            yield return StartCoroutine(ArrangeAtShowcase(flyingCards, showcaseCenter));
+            yield return StartCoroutine(ArrangeAtShowcase(allCards, showcaseCenter));
 
-            // 전시 대기 (무슨 카드 냈는지 확인)
+            if (allCards.Count > 1)
+            {
+                yield return new WaitForSeconds(0.7f);
+
+                // 1단계: 타입별 정렬 (Attack → Heal)
+                yield return StartCoroutine(SortShowcaseBy(allCards, showcaseCenter, SortByType));
+
+                // 카드 숫자가 전부 동일하지 않을 때만 2단계 정렬
+                bool allSameIndex = true;
+                int firstIndex = allCards[0] != null ? allCards[0].GetComponent<CardValue>()?.poolIndex ?? 0 : 0;
+                for (int i = 1; i < allCards.Count; i++)
+                {
+                    int idx = allCards[i] != null ? allCards[i].GetComponent<CardValue>()?.poolIndex ?? 0 : 0;
+                    if (idx != firstIndex) { allSameIndex = false; break; }
+                }
+
+                if (!allSameIndex)
+                {
+                    yield return new WaitForSeconds(0.7f);
+
+                    // 2단계: 숫자 정렬 (왼쪽 작은 수 → 오른쪽 큰 수)
+                    yield return StartCoroutine(SortShowcaseBy(allCards, showcaseCenter, SortByTypeAndValue));
+                }
+            }
+
             yield return new WaitForSeconds(showcaseTime);
 
-            // 상대 방향으로 회전 후 날리기
-            yield return StartCoroutine(FlyAndHit(flyingCards, target.position));
+            // Attack 카드 → 상대 덱으로, Heal 카드 → 자기 덱으로
+            Coroutine attackFly = null, healFly = null;
+            if (attackCards.Count > 0)
+                attackFly = StartCoroutine(FlyAndHit(attackCards, target.position));
+            if (healCards.Count > 0)
+                healFly = StartCoroutine(FlyAndHit(healCards, mySpawn.position));
 
-            // 피격 연출: 맞은 쪽 덱 흔들림 + 카메라 흔들림
-            StartCoroutine(ShakeTransform(target, hitShakeDuration, hitShakeIntensity));
-            yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity));
+            if (attackFly != null) yield return attackFly;
+            if (healFly != null) yield return healFly;
+
+            // 피격 연출 (Attack 카드가 있을 때만)
+            if (attackCards.Count > 0)
+            {
+                StartCoroutine(ShakeTransform(target, hitShakeDuration, hitShakeIntensity));
+                yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity));
+            }
+
+            // HP 처리: 카드 비율에 따라 데미지 / 회복 분배
+            if (hp != null && turnScore > 0f)
+            {
+                int totalCount = attackCards.Count + healCards.Count;
+                float attackRatio = (float)attackCards.Count / totalCount;
+                float healRatio = (float)healCards.Count / totalCount;
+
+                float attackScore = turnScore * attackRatio;
+                float healScore = turnScore * healRatio * 0.5f; // 힐 계수 1/2
+
+                if (attackScore > 0f)
+                {
+                    if (_isPlayerTurn)
+                        hp.DamageOpp(attackScore);
+                    else
+                        hp.DamagePlayer(attackScore);
+                }
+                if (healScore > 0f)
+                {
+                    if (_isPlayerTurn)
+                        hp.HealPlayer(healScore);
+                    else
+                        hp.HealOpp(healScore);
+                }
+            }
+
+            // 콤보(원페어 이상)일 때만 카드 수만큼 다음 드로우
+            bool isCombo = turnRule != "" && turnRule != "하이카드";
+            if (isCombo && allCards.Count > 0)
+            {
+                if (_isPlayerTurn)
+                    _playerNextDraw = allCards.Count;
+                else
+                    _oppNextDraw = allCards.Count;
+            }
+
+            // 점수 비례 보너스 카드 (0~2장): 40점 미만 0장, 40~79점 1장, 80점 이상 2장
+            if (turnScore > 0f)
+            {
+                int bonusCards = Mathf.Clamp(Mathf.FloorToInt(turnScore / 40f), 0, 2);
+                if (_isPlayerTurn)
+                    _playerNextDraw += bonusCards;
+                else
+                    _oppNextDraw += bonusCards;
+            }
         }
 
-        // 안전 정리: 슬롯에 남은 카드 강제 제거
+        // 안전 정리: 슬롯에 남은 카드 → 덱으로 복귀
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
             {
-                if (slot != null && slot.HasCard)
-                    slot.ClearCard();
+                if (slot == null || !slot.HasCard) continue;
+
+                var cv = slot.GetCardValue();
+                int value = cv != null ? cv.value : 0;
+                bool isJoker = cv != null && cv.isJoker;
+                CardType type = cv != null ? cv.cardType : CardType.Attack;
+
+                slot.ClearCard();
+
+                if (_isPlayerTurn)
+                {
+                    if (isJoker)
+                        deck.AddJokerCard(type);
+                    else if (value > 0)
+                        deck.AddCardByValue(value, type);
+                }
+                else
+                {
+                    if (value > 0)
+                        oppDeck.AddCardByValue(value, type);
+                }
             }
         }
 
@@ -208,11 +333,19 @@ public class MainFlow : MonoBehaviour
 
         UpdateInteraction();
 
-        // 새 턴: 카드 1장 추가
+        // 새 턴: 이전 콤보 카드 수만큼 드로우
         if (_isPlayerTurn)
-            deck.AddOneCard();
+        {
+            for (int i = 0; i < _playerNextDraw; i++)
+                deck.AddOneCard();
+            _playerNextDraw = 1;
+        }
         else
-            oppDeck.AddOneCard();
+        {
+            for (int i = 0; i < _oppNextDraw; i++)
+                oppDeck.AddOneCard();
+            _oppNextDraw = 1;
+        }
 
         // 카드 크기 전환 애니메이션
         yield return StartCoroutine(AnimateTurnScale());
@@ -302,7 +435,10 @@ public class MainFlow : MonoBehaviour
             deck.canPlaceInSlot = _isPlayerTurn;
 
         if (endTurnButton != null)
+        {
+            endTurnButton.gameObject.SetActive(true);
             endTurnButton.interactable = _isPlayerTurn;
+        }
     }
 
     // ─────────────────────────────────────────
@@ -353,6 +489,80 @@ public class MainFlow : MonoBehaviour
             cards[i].transform.position = targets[i];
             cards[i].transform.rotation = Quaternion.identity;
         }
+    }
+
+    // ─────────────────────────────────────────
+    //  쇼케이스 정렬 (범용)
+    // ─────────────────────────────────────────
+    private IEnumerator SortShowcaseBy(List<GameObject> cards, Vector3 center,
+        System.Comparison<GameObject> comparison)
+    {
+        int count = cards.Count;
+
+        int[] indices = new int[count];
+        for (int i = 0; i < count; i++) indices[i] = i;
+        System.Array.Sort(indices, (a, b) => comparison(cards[a], cards[b]));
+
+        Vector3[] sortedTargets = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            float offset = (i - (count - 1) * 0.5f) * showcaseSpacing;
+            sortedTargets[i] = new Vector3(center.x + offset, center.y, 0f);
+        }
+
+        Vector3[] startPositions = new Vector3[count];
+        for (int i = 0; i < count; i++)
+        {
+            if (cards[indices[i]] != null)
+                startPositions[i] = cards[indices[i]].transform.position;
+        }
+
+        float elapsed = 0f;
+        while (elapsed < showcaseSortDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / showcaseSortDuration);
+            float eased = t * t * (3f - 2f * t);
+
+            for (int i = 0; i < count; i++)
+            {
+                if (cards[indices[i]] == null) continue;
+                cards[indices[i]].transform.position = Vector3.Lerp(startPositions[i], sortedTargets[i], eased);
+            }
+
+            yield return null;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            if (cards[indices[i]] == null) continue;
+            cards[indices[i]].transform.position = sortedTargets[i];
+            foreach (var r in cards[indices[i]].GetComponentsInChildren<Renderer>())
+                r.sortingOrder = 500 + i;
+        }
+    }
+
+    // ── 정렬 비교 함수: 타입별 (Attack → Heal) ──
+    private static int SortByType(GameObject a, GameObject b)
+    {
+        var cva = a != null ? a.GetComponent<CardValue>() : null;
+        var cvb = b != null ? b.GetComponent<CardValue>() : null;
+        int ta = cva != null ? (int)cva.cardType : 0;
+        int tb = cvb != null ? (int)cvb.cardType : 0;
+        return ta.CompareTo(tb);
+    }
+
+    // ── 정렬 비교 함수: 타입별 → 덱 인덱스별 ──
+    private static int SortByTypeAndValue(GameObject a, GameObject b)
+    {
+        var cva = a != null ? a.GetComponent<CardValue>() : null;
+        var cvb = b != null ? b.GetComponent<CardValue>() : null;
+        int ta = cva != null ? (int)cva.cardType : 0;
+        int tb = cvb != null ? (int)cvb.cardType : 0;
+        if (ta != tb) return ta.CompareTo(tb);
+        int pa = cva != null ? cva.poolIndex : 0;
+        int pb = cvb != null ? cvb.poolIndex : 0;
+        return pa.CompareTo(pb);
     }
 
     // ─────────────────────────────────────────

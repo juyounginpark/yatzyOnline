@@ -34,6 +34,9 @@ public class Deck : MonoBehaviour
     [Header("─ 덱 그룹 목록 ─")]
     public DeckGroup[] deckGroups = new DeckGroup[1];
 
+    [Header("─ 카드 뒷면 ─")]
+    public GameObject cardBackPrefab;
+
     [Header("─ 드로우 설정 ─")]
     public int drawCount = 5;
     public int maxCards = 8;

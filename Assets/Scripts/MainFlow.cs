@@ -210,7 +210,7 @@ public class MainFlow : MonoBehaviour
             }
         }
 
-        // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리)
+        // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리, 뒷면 카드는 제외)
         List<GameObject> attackCards = new List<GameObject>();
         List<GameObject> criticalCards = new List<GameObject>();
         List<GameObject> healCards = new List<GameObject>();
@@ -220,6 +220,7 @@ public class MainFlow : MonoBehaviour
             foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
+                if (slot.IsFaceDown) continue; // 뒷면 카드는 남겨둠
                 var cv = slot.GetCardValue();
                 CardType type = cv != null ? cv.cardType : CardType.Attack;
                 var card = slot.ReleaseCard();
@@ -332,6 +333,17 @@ public class MainFlow : MonoBehaviour
                 }
             }
 
+            // 공격 후: 상대 슬롯에 남아있던 카드 제거 (뒷면 카드는 유지)
+            Slot[] victimSlots = _isPlayerTurn ? oppSlots : playerSlots;
+            if (victimSlots != null)
+            {
+                foreach (var slot in victimSlots)
+                {
+                    if (slot != null && slot.HasCard && !slot.IsFaceDown)
+                        slot.ClearCard();
+                }
+            }
+
             // 콤보(원페어 이상)일 때만 카드 수만큼 다음 드로우
             bool isCombo = turnRule != "" && turnRule != "하이카드";
             if (isCombo && allCards.Count > 0)
@@ -353,12 +365,13 @@ public class MainFlow : MonoBehaviour
             }
         }
 
-        // 안전 정리: 슬롯에 남은 카드 → 덱으로 복귀
+        // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀 (뒷면 카드는 유지)
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
+                if (slot.IsFaceDown) continue; // 뒷면 카드는 남겨둠
 
                 var cv = slot.GetCardValue();
                 int value = cv != null ? cv.value : 0;
@@ -385,6 +398,20 @@ public class MainFlow : MonoBehaviour
         // 턴 전환
         _isPlayerTurn = !_isPlayerTurn;
         _timer = turnTime;
+
+        // 상대 슬롯에 남아있는 뒷면 카드를 앞면으로 전환 (애니메이션)
+        Slot[] oppositeSlots = _isPlayerTurn ? oppSlots : playerSlots;
+        if (oppositeSlots != null)
+        {
+            Coroutine lastReveal = null;
+            foreach (var slot in oppositeSlots)
+            {
+                if (slot != null && slot.HasCard && slot.IsFaceDown)
+                    lastReveal = slot.RevealCard();
+            }
+            if (lastReveal != null)
+                yield return lastReveal;
+        }
 
         UpdateInteraction();
 

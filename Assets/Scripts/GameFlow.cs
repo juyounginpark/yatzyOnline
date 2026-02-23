@@ -105,7 +105,7 @@ public class GameFlow : MonoBehaviour
 
         for (int i = 0; i < slotCount; i++)
         {
-            if (slots[i] != null && slots[i].HasCard)
+            if (slots[i] != null && slots[i].HasVisibleCard)
             {
                 var cv = slots[i].GetCardValue();
                 if (cv != null)
@@ -172,7 +172,11 @@ public class GameFlow : MonoBehaviour
         {
             if (i >= _slotEffects.Count) break;
 
-            if (contributing[i] && slots[i] != null && slots[i].HasCard)
+            bool showEffect = (contributing[i] && slots[i] != null && slots[i].HasVisibleCard)
+                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard && !slots[i].IsFaceDown);
+            // ↑ revealedOnly 카드에도 테두리 표시
+
+            if (showEffect)
             {
                 _slotEffects[i].SetActive(true);
                 GameObject slotCard = slots[i].GetPlacedCard();
@@ -239,7 +243,7 @@ public class GameFlow : MonoBehaviour
         bool[] jokerFlags = new bool[targetSlots.Length];
         for (int i = 0; i < targetSlots.Length; i++)
         {
-            if (targetSlots[i] != null && targetSlots[i].HasCard)
+            if (targetSlots[i] != null && targetSlots[i].HasVisibleCard)
             {
                 var cv = targetSlots[i].GetCardValue();
                 if (cv != null)
@@ -268,7 +272,7 @@ public class GameFlow : MonoBehaviour
         bool[] jokerFlags = new bool[slots.Length];
         for (int i = 0; i < slots.Length; i++)
         {
-            if (slots[i] != null && slots[i].HasCard)
+            if (slots[i] != null && slots[i].HasVisibleCard)
             {
                 var cv = slots[i].GetCardValue();
                 if (cv != null)
@@ -499,7 +503,7 @@ public class GameFlow : MonoBehaviour
         List<string> display = new List<string>();
         foreach (var slot in slots)
         {
-            if (slot == null || !slot.HasCard) continue;
+            if (slot == null || !slot.HasVisibleCard) continue;
             var cv = slot.GetCardValue();
             if (cv != null)
                 display.Add(cv.isJoker ? "J" : cv.value.ToString());

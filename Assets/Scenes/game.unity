@@ -385,8 +385,9 @@ MonoBehaviour:
       prefab: {fileID: 8002144047082630695, guid: 1837d2a79dc066f419af1a12d970699d, type: 3}
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 813d0b84fa870044c967ecfda8d0c3de, type: 3}
+  cardBackPrefab: {fileID: 8002144047082630695, guid: 76d02f272784433448ed9557901a4ab2, type: 3}
   drawCount: 5
-  maxCards: 10
+  maxCards: 8
   deckSpawnPoint: {fileID: 558328321}
   archRadius: 3
   baseAngleRange: 60
@@ -469,7 +470,7 @@ MonoBehaviour:
   gameFlow: {fileID: 484160618}
   gameUI: {fileID: 1684790754}
   hp: {fileID: 484160620}
-  turnTime: 10
+  turnTime: 30
   showcaseTime: 0.5
   showcaseMoveDuration: 0.5
   showcaseSortDuration: 0.4

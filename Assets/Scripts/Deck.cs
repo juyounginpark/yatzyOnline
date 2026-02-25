@@ -19,6 +19,7 @@ public class CardEntry
 [Serializable]
 public class DeckGroup
 {
+    public bool isActive = true;
     public string groupName = "New Group";
     public CardType groupType = CardType.Attack;
 
@@ -513,7 +514,7 @@ public class Deck : MonoBehaviour
 
         foreach (DeckGroup group in deckGroups)
         {
-            if (group?.cards == null) continue;
+            if (group?.cards == null || !group.isActive) continue;
 
             for (int i = 0; i < group.cards.Length; i++)
             {

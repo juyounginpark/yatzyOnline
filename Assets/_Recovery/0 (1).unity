@@ -336,24 +336,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Deck
   deckGroups:
   - isActive: 1
-    groupName: Normal
-    groupType: 0
-    cards:
-    - cardName: 1
-      prefab: {fileID: 8002144047082630695, guid: d96b5146585102d4fa32a8e3bf8b1ded, type: 3}
-    - cardName: 2
-      prefab: {fileID: 8002144047082630695, guid: cee871ab984565b47a858c5365b206a4, type: 3}
-    - cardName: 3
-      prefab: {fileID: 8002144047082630695, guid: 3d25e7ecbef42fd4e9b70afd3ede6a36, type: 3}
-    - cardName: 4
-      prefab: {fileID: 8002144047082630695, guid: 15072006c205ed7409550577c6e2a42c, type: 3}
-    - cardName: 5
-      prefab: {fileID: 8002144047082630695, guid: 35ef5215ae9bb7847b9b3f1c37287a43, type: 3}
-    - cardName: 6
-      prefab: {fileID: 8002144047082630695, guid: 4e14a54264bb3ab49a9e3a83b023a999, type: 3}
-    - cardName: Joker
-      prefab: {fileID: 8002144047082630695, guid: 431b86bdce5b35043bff5ae6d366d919, type: 3}
-  - isActive: 0
     groupName: Heal
     groupType: 2
     cards:
@@ -371,7 +353,25 @@ MonoBehaviour:
       prefab: {fileID: 8002144047082630695, guid: 424cf9f1f0733184c926861e4d615c03, type: 3}
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 1a49b6455305f3a49a8117b55339b36d, type: 3}
-  - isActive: 0
+  - isActive: 1
+    groupName: Normal
+    groupType: 0
+    cards:
+    - cardName: 1
+      prefab: {fileID: 8002144047082630695, guid: d96b5146585102d4fa32a8e3bf8b1ded, type: 3}
+    - cardName: 2
+      prefab: {fileID: 8002144047082630695, guid: cee871ab984565b47a858c5365b206a4, type: 3}
+    - cardName: 3
+      prefab: {fileID: 8002144047082630695, guid: 3d25e7ecbef42fd4e9b70afd3ede6a36, type: 3}
+    - cardName: 4
+      prefab: {fileID: 8002144047082630695, guid: 15072006c205ed7409550577c6e2a42c, type: 3}
+    - cardName: 5
+      prefab: {fileID: 8002144047082630695, guid: 35ef5215ae9bb7847b9b3f1c37287a43, type: 3}
+    - cardName: 6
+      prefab: {fileID: 8002144047082630695, guid: 4e14a54264bb3ab49a9e3a83b023a999, type: 3}
+    - cardName: Joker
+      prefab: {fileID: 8002144047082630695, guid: 431b86bdce5b35043bff5ae6d366d919, type: 3}
+  - isActive: 1
     groupName: Critical
     groupType: 1
     cards:
@@ -484,7 +484,7 @@ MonoBehaviour:
   hitShakeDuration: 0.5
   hitShakeIntensity: 0.3
   cameraShakeIntensity: 0.08
-  activeScale: 1
+  activeScale: 0.85
   inactiveScale: 0.7
   scaleDuration: 0.3
 --- !u!114 &484160620
@@ -1307,7 +1307,7 @@ MonoBehaviour:
   placeDuration: 0.4
   flipDuration: 0.5
   flipStagger: 0.1
-  defenseProbability: 0.5
+  defenseProbability: 1
 --- !u!1 &976743760 stripped
 GameObject:
   m_CorrespondingSourceObject: {fileID: 8002144047082630695, guid: 0761b55c4f456e34292e813ab430c650, type: 3}

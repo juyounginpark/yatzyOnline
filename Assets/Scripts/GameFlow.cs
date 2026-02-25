@@ -30,6 +30,11 @@ public class GameFlow : MonoBehaviour
     public float CurrentBestScore { get; private set; }
     public string CurrentBestRule { get; private set; } = "";
 
+    // ─── 방어(뒷면) 카드 상태 ───
+    public float CurrentDefenseScore { get; private set; }
+    public string CurrentDefenseRule { get; private set; } = "";
+    public bool HasDefenseCards { get; private set; }
+
     void Start()
     {
         if (deck == null)
@@ -67,7 +72,7 @@ public class GameFlow : MonoBehaviour
     {
         if (deck == null || effectHover == null)
         {
-            if (_hoverEffect != null) _hoverEffect.SetActive(false);
+            DetachEffect(_hoverEffect);
             return;
         }
 
@@ -75,12 +80,14 @@ public class GameFlow : MonoBehaviour
 
         if (target != null)
         {
+            if (_hoverEffect == null)
+                _hoverEffect = CreateEffectObject("HoverEffect", effectHover);
             _hoverEffect.SetActive(true);
             AttachEffect(_hoverEffect, target, effectHover, 200);
         }
         else
         {
-            _hoverEffect.SetActive(false);
+            DetachEffect(_hoverEffect);
         }
 
         _lastEffectTarget = target;
@@ -93,7 +100,7 @@ public class GameFlow : MonoBehaviour
     {
         if (deck == null || effectBestPick == null || deck.IsAnimating)
         {
-            foreach (var fx in _bestPickEffects) if (fx != null) fx.SetActive(false);
+            foreach (var fx in _bestPickEffects) DetachEffect(fx);
             return;
         }
 
@@ -137,6 +144,8 @@ public class GameFlow : MonoBehaviour
             int idx = slotCount + i;
             if (i < cards.Count && cards[i] != null && idx < contributing.Length && contributing[idx])
             {
+                if (_bestPickEffects[i] == null)
+                    _bestPickEffects[i] = CreateEffectObject($"BestPickEffect_{i}", effectBestPick);
                 _bestPickEffects[i].SetActive(true);
                 var hover = cards[i].GetComponent<CardHover>();
                 int sortOrder = hover != null ? hover.baseSortingOrder + 1 : 101;
@@ -144,7 +153,7 @@ public class GameFlow : MonoBehaviour
             }
             else
             {
-                _bestPickEffects[i].SetActive(false);
+                DetachEffect(_bestPickEffects[i]);
             }
         }
     }
@@ -168,16 +177,55 @@ public class GameFlow : MonoBehaviour
                 EvaluateAndLog();
         }
 
+        // 방어(뒷면) 카드 점수 계산
+        HasDefenseCards = false;
+        CurrentDefenseScore = 0f;
+        CurrentDefenseRule = "";
+        int[] defValues = new int[slots.Length];
+        bool[] defJokerFlags = new bool[slots.Length];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] != null && slots[i].HasCard && slots[i].IsFaceDown)
+            {
+                HasDefenseCards = true;
+                var cv = slots[i].GetCardValue();
+                if (cv != null)
+                {
+                    defJokerFlags[i] = cv.isJoker;
+                    defValues[i] = cv.isJoker ? 0 : cv.value;
+                }
+            }
+        }
+        if (HasDefenseCards)
+        {
+            string defRule;
+            CurrentDefenseScore = EvaluateValues(defValues, defJokerFlags, out defRule);
+            CurrentDefenseRule = defRule;
+        }
+
+        // 방어(뒷면) 카드 기여 슬롯 계산
+        bool[] defContributing = new bool[slots.Length];
+        if (HasDefenseCards)
+        {
+            int[] defResolved = ResolveJokersOptimal(defValues, defJokerFlags);
+            string defDummy;
+            float defDummyScore;
+            defContributing = FindContributingIndices(defResolved, out defDummy, out defDummyScore);
+        }
+
         for (int i = 0; i < slots.Length; i++)
         {
             if (i >= _slotEffects.Count) break;
 
             bool showEffect = (contributing[i] && slots[i] != null && slots[i].HasVisibleCard)
-                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard && !slots[i].IsFaceDown);
-            // ↑ revealedOnly 카드에도 테두리 표시
+                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard && !slots[i].IsFaceDown)
+                           || (defContributing[i] && slots[i] != null && slots[i].HasCard && slots[i].IsFaceDown);
+            // ↑ revealedOnly 카드 + 뒷면 방어 카드에도 테두리 표시
 
             if (showEffect)
             {
+                if (_slotEffects[i] == null)
+                    _slotEffects[i] = CreateEffectObject($"SlotEffect_{i}", effectContribute);
                 _slotEffects[i].SetActive(true);
                 GameObject slotCard = slots[i].GetPlacedCard();
                 if (slotCard != null)
@@ -185,7 +233,7 @@ public class GameFlow : MonoBehaviour
             }
             else
             {
-                _slotEffects[i].SetActive(false);
+                DetachEffect(_slotEffects[i]);
             }
         }
     }
@@ -195,8 +243,9 @@ public class GameFlow : MonoBehaviour
     // ─────────────────────────────────────────
     private void AttachEffect(GameObject fx, GameObject card, Sprite sprite, int sortOrder)
     {
-        fx.transform.position = card.transform.position;
-        fx.transform.rotation = card.transform.rotation;
+        fx.transform.SetParent(card.transform);
+        fx.transform.localPosition = Vector3.zero;
+        fx.transform.localRotation = Quaternion.identity;
 
         var cardSr = card.GetComponentInChildren<SpriteRenderer>();
         if (cardSr == null || cardSr.sprite == null) return;
@@ -210,7 +259,18 @@ public class GameFlow : MonoBehaviour
         float cardH = cardSpriteSize.y * Mathf.Abs(cardScale.y);
 
         Vector2 effectSize = sprite.bounds.size;
-        fx.transform.localScale = new Vector3(cardW / effectSize.x, cardH / effectSize.y, 1f);
+
+        Vector3 parentLossy = card.transform.lossyScale;
+        float lsX = parentLossy.x != 0f ? (cardW / effectSize.x) / Mathf.Abs(parentLossy.x) : 1f;
+        float lsY = parentLossy.y != 0f ? (cardH / effectSize.y) / Mathf.Abs(parentLossy.y) : 1f;
+        fx.transform.localScale = new Vector3(lsX, lsY, 1f);
+    }
+
+    private void DetachEffect(GameObject fx)
+    {
+        if (fx == null) return;
+        fx.transform.SetParent(null);
+        fx.SetActive(false);
     }
 
     // ─────────────────────────────────────────
@@ -289,6 +349,11 @@ public class GameFlow : MonoBehaviour
     // ─────────────────────────────────────────
     //  조커 최적 값 해석 (1~6 전부 시도, 최고 점수 채택)
     // ─────────────────────────────────────────
+    public int[] ResolveJokers(int[] values, bool[] jokerFlags)
+    {
+        return ResolveJokersOptimal(values, jokerFlags);
+    }
+
     private int[] ResolveJokersOptimal(int[] values, bool[] jokerFlags)
     {
         List<int> jokerIndices = new List<int>();
@@ -493,6 +558,20 @@ public class GameFlow : MonoBehaviour
             }
         }
         return marks;
+    }
+
+    // ─────────────────────────────────────────
+    //  외부용: 값/조커 배열에서 조커 해석 포함 점수 계산
+    // ─────────────────────────────────────────
+    public float EvaluateValues(int[] values, bool[] jokerFlags, out string ruleName)
+    {
+        ruleName = "";
+        int[] resolved = ResolveJokersOptimal(values, jokerFlags);
+        List<int> filled = new List<int>();
+        for (int i = 0; i < resolved.Length; i++)
+            if (resolved[i] > 0) filled.Add(resolved[i]);
+        if (filled.Count == 0) return 0f;
+        return EvaluateHand(filled.ToArray(), out ruleName);
     }
 
     // ─────────────────────────────────────────

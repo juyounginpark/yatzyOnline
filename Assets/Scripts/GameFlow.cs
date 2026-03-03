@@ -30,11 +30,6 @@ public class GameFlow : MonoBehaviour
     public float CurrentBestScore { get; private set; }
     public string CurrentBestRule { get; private set; } = "";
 
-    // ─── 방어(뒷면) 카드 상태 ───
-    public float CurrentDefenseScore { get; private set; }
-    public string CurrentDefenseRule { get; private set; } = "";
-    public bool HasDefenseCards { get; private set; }
-
     void Start()
     {
         if (deck == null)
@@ -176,51 +171,12 @@ public class GameFlow : MonoBehaviour
             if (!string.IsNullOrEmpty(currentBest))
                 EvaluateAndLog();
         }
-
-        // 방어(뒷면) 카드 점수 계산
-        HasDefenseCards = false;
-        CurrentDefenseScore = 0f;
-        CurrentDefenseRule = "";
-        int[] defValues = new int[slots.Length];
-        bool[] defJokerFlags = new bool[slots.Length];
-        for (int i = 0; i < slots.Length; i++)
-        {
-            if (slots[i] != null && slots[i].HasCard && slots[i].IsFaceDown)
-            {
-                HasDefenseCards = true;
-                var cv = slots[i].GetCardValue();
-                if (cv != null)
-                {
-                    defJokerFlags[i] = cv.isJoker;
-                    defValues[i] = cv.isJoker ? 0 : cv.value;
-                }
-            }
-        }
-        if (HasDefenseCards)
-        {
-            string defRule;
-            CurrentDefenseScore = EvaluateValues(defValues, defJokerFlags, out defRule);
-            CurrentDefenseRule = defRule;
-        }
-
-        // 방어(뒷면) 카드 기여 슬롯 계산
-        bool[] defContributing = new bool[slots.Length];
-        if (HasDefenseCards)
-        {
-            int[] defResolved = ResolveJokersOptimal(defValues, defJokerFlags);
-            string defDummy;
-            float defDummyScore;
-            defContributing = FindContributingIndices(defResolved, out defDummy, out defDummyScore);
-        }
-
         for (int i = 0; i < slots.Length; i++)
         {
             if (i >= _slotEffects.Count) break;
 
             bool showEffect = (contributing[i] && slots[i] != null && slots[i].HasVisibleCard)
-                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard && !slots[i].IsFaceDown)
-                           || (defContributing[i] && slots[i] != null && slots[i].HasCard && slots[i].IsFaceDown);
-            // ↑ revealedOnly 카드 + 뒷면 방어 카드에도 테두리 표시
+                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard);
 
             if (showEffect)
             {

@@ -36,6 +36,16 @@ public class MainFlow : MonoBehaviour
     public Exp exp;
     public Roulette roulette;
 
+    [Header("─ 슬롯 리롤 ─")]
+    [Tooltip("슬롯 카드 위에 표시할 리롤 이미지 프리팹")]
+    public GameObject rerollImagePrefab;
+
+    [Tooltip("남은 리롤 횟수 텍스트 (스프라이트 오브젝트에 TMP 컴포넌트 포함)")]
+    public GameObject rerollCountObject;
+
+    [Tooltip("턴당 최대 리롤 횟수")]
+    public int maxSlotRerolls = 2;
+
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
 
@@ -89,6 +99,13 @@ public class MainFlow : MonoBehaviour
 
     // AI 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
     private OppAuto _oppAuto;
+
+    // ─── 슬롯 리롤 상태 ───
+    private int _slotRerollsRemaining;
+    private GameObject _rerollOverlay;
+    private Slot _hoveredRerollSlot;
+    private bool _isRerolling;
+    private readonly Dictionary<Slot, float> _slotCardPlacedTime = new Dictionary<Slot, float>();
 
     public bool IsPlayerTurn => _isPlayerTurn;
     public float TimeRemaining => Mathf.Max(0f, _timer);
@@ -149,6 +166,10 @@ public class MainFlow : MonoBehaviour
         {
             EndTurn();
         }
+
+        // 슬롯 리롤 호버/클릭
+        if (_isPlayerTurn && !_isTransitioning && !_isRerolling)
+            UpdateSlotReroll();
     }
 
     // ─────────────────────────────────────────
@@ -385,19 +406,19 @@ public class MainFlow : MonoBehaviour
 
         }
 
-        // ── 공격 후 EXP 추가 + 레벨업 시 룰렛 ──
+        // ── 공격 후 EXP 추가 (레벨업 시 룰렛 → 완료 후 남은 EXP 계속) ──
         if (_isPlayerTurn && exp != null && turnScore > 0f)
         {
-            int levelsGained = exp.AddExp(Mathf.RoundToInt(turnScore));
-            Debug.Log($"[MainFlow] EXP +{Mathf.RoundToInt(turnScore)}, 레벨업 {levelsGained}회, roulette={roulette}");
-            if (levelsGained > 0 && roulette != null)
-            {
-                for (int i = 0; i < levelsGained; i++)
-                {
-                    Debug.Log($"[MainFlow] 룰렛 시작 ({i + 1}/{levelsGained})");
-                    yield return StartCoroutine(roulette.SpinAndReward());
-                }
-            }
+            // 룰렛이 있으면 레벨업 콜백으로 전달 → LEVEL UP 표시 후 룰렛 완료까지 EXP 멈춤
+            System.Func<IEnumerator> levelUpCallback = null;
+            if (roulette != null)
+                levelUpCallback = () => roulette.SpinAndReward();
+
+            yield return StartCoroutine(exp.AddExpAnimated(
+                Mathf.RoundToInt(turnScore),
+                levelUpCallback
+            ));
+            Debug.Log($"[MainFlow] EXP +{Mathf.RoundToInt(turnScore)} 완료");
         }
 
         // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀
@@ -554,6 +575,329 @@ public class MainFlow : MonoBehaviour
             endTurnButton.gameObject.SetActive(true);
             endTurnButton.interactable = _isPlayerTurn;
         }
+
+        // 슬롯 리롤 횟수 초기화
+        if (_isPlayerTurn)
+        {
+            _slotRerollsRemaining = maxSlotRerolls;
+            _slotCardPlacedTime.Clear();
+            UpdateRerollCountUI();
+            ClearRerollOverlay();
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  슬롯 리롤: 호버 감지 + 클릭 처리
+    // ─────────────────────────────────────────
+    private void UpdateSlotReroll()
+    {
+        if (_slotRerollsRemaining <= 0 || playerSlots == null)
+        {
+            ClearRerollOverlay();
+            return;
+        }
+
+        Camera cam = Camera.main;
+        if (cam == null) return;
+
+        // 슬롯 카드 배치 시간 추적
+        foreach (var slot in playerSlots)
+        {
+            if (slot == null) continue;
+            if (slot.HasCard)
+            {
+                if (!_slotCardPlacedTime.ContainsKey(slot))
+                    _slotCardPlacedTime[slot] = Time.time;
+            }
+            else
+            {
+                _slotCardPlacedTime.Remove(slot);
+            }
+        }
+
+        Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
+
+        // 마우스 아래 카드가 있는 플레이어 슬롯 찾기 (배치 후 0.5초 쿨다운)
+        Slot hoveredSlot = null;
+        foreach (var slot in playerSlots)
+        {
+            if (slot == null || !slot.HasCard) continue;
+
+            // 배치 직후 0.5초간 리롤 오버레이 비활성
+            if (_slotCardPlacedTime.TryGetValue(slot, out float placedTime)
+                && Time.time - placedTime < 0.5f)
+                continue;
+
+            var col = slot.GetComponent<Collider2D>();
+            if (col != null && col.OverlapPoint(mouseWorld))
+            {
+                hoveredSlot = slot;
+                break;
+            }
+        }
+
+        // 호버 슬롯이 바뀌면 오버레이 갱신
+        if (hoveredSlot != _hoveredRerollSlot)
+        {
+            ClearRerollOverlay();
+            _hoveredRerollSlot = hoveredSlot;
+
+            if (_hoveredRerollSlot != null && rerollImagePrefab != null)
+            {
+                _rerollOverlay = Instantiate(rerollImagePrefab, _hoveredRerollSlot.transform);
+                _rerollOverlay.transform.localPosition = Vector3.zero;
+                _rerollOverlay.transform.localScale = Vector3.one * 1.5f;
+
+                // 소팅 오더 최상위 + 원형 자르기 (피자 스타일)
+                float ratio = (float)_slotRerollsRemaining / maxSlotRerolls;
+                foreach (var sr in _rerollOverlay.GetComponentsInChildren<SpriteRenderer>())
+                {
+                    sr.sortingOrder = 50;
+
+                    if (sr.sprite != null)
+                    {
+                        Shader radialShader = Shader.Find("Custom/RadialFill");
+                        if (radialShader != null)
+                        {
+                            Material mat = new Material(radialShader);
+                            mat.SetTexture("_MainTex", sr.sprite.texture);
+                            mat.SetFloat("_Fill", ratio);
+
+                            // 아틀라스 대응: 스프라이트 UV rect 전달
+                            Rect texRect = sr.sprite.textureRect;
+                            float texW = sr.sprite.texture.width;
+                            float texH = sr.sprite.texture.height;
+                            mat.SetVector("_SpriteRect", new Vector4(
+                                texRect.x / texW, texRect.y / texH,
+                                texRect.width / texW, texRect.height / texH
+                            ));
+
+                            sr.material = mat;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 클릭 → 리롤 실행
+        if (_hoveredRerollSlot != null && Input.GetMouseButtonDown(0))
+        {
+            Slot rerollSlot = _hoveredRerollSlot;
+            ClearRerollOverlay();
+            StartCoroutine(DoSlotReroll(rerollSlot));
+        }
+    }
+
+    private void ClearRerollOverlay()
+    {
+        if (_rerollOverlay != null)
+        {
+            Destroy(_rerollOverlay);
+            _rerollOverlay = null;
+        }
+
+        _hoveredRerollSlot = null;
+    }
+
+    // ─────────────────────────────────────────
+    //  슬롯 리롤: 카드 교체 애니메이션
+    // ─────────────────────────────────────────
+    private IEnumerator DoSlotReroll(Slot slot)
+    {
+        if (slot == null || !slot.HasCard || deck == null) yield break;
+
+        _isRerolling = true;
+
+        // 리롤 전: 슬롯 이펙트를 분리하여 reelContainer 파괴 시 이펙트가 함께 파괴되는 것 방지
+        if (gameFlow != null && playerSlots != null)
+        {
+            for (int si = 0; si < playerSlots.Length; si++)
+            {
+                if (playerSlots[si] == slot)
+                {
+                    gameFlow.DetachSlotEffect(si);
+                    break;
+                }
+            }
+        }
+
+        var oldCv = slot.GetCardValue();
+        if (oldCv == null) { _isRerolling = false; yield break; }
+
+        CardType type = oldCv.cardType;
+
+        // 최종 결과 카드 미리 결정
+        GameObject finalPrefab;
+        int finalValue;
+        bool finalIsJoker;
+        if (!deck.GetRandomPrefabOfType(type, out finalPrefab, out finalValue, out finalIsJoker))
+        {
+            _isRerolling = false;
+            yield break;
+        }
+
+        var slotCol = slot.GetComponent<Collider2D>();
+        if (slotCol == null) { _isRerolling = false; yield break; }
+
+        Vector2 slotWorldSize = slotCol.bounds.size;
+        Vector3 slotLossyScale = slot.transform.lossyScale;
+
+        // ── SpriteMask 생성 (뷰포트 역할) ──
+        GameObject maskObj = new GameObject("SlotRerollMask");
+        maskObj.transform.SetParent(slot.transform, false);
+        maskObj.transform.localPosition = Vector3.zero;
+
+        SpriteMask mask = maskObj.AddComponent<SpriteMask>();
+        Texture2D maskTex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
+        Color[] pix = new Color[16];
+        for (int p = 0; p < 16; p++) pix[p] = Color.white;
+        maskTex.SetPixels(pix);
+        maskTex.Apply();
+        mask.sprite = Sprite.Create(maskTex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
+
+        // 마스크를 슬롯 크기에 맞춤
+        maskObj.transform.localScale = new Vector3(
+            slotWorldSize.x / Mathf.Max(Mathf.Abs(slotLossyScale.x), 0.001f),
+            slotWorldSize.y / Mathf.Max(Mathf.Abs(slotLossyScale.y), 0.001f),
+            1f
+        );
+
+        // 슬롯 로컬 스페이스 카드 간격 (= 슬롯 높이)
+        float cardSpacing = slotWorldSize.y / Mathf.Max(Mathf.Abs(slotLossyScale.y), 0.001f);
+
+        // ── 릴 컨테이너 ──
+        GameObject reelContainer = new GameObject("ReelContainer");
+        reelContainer.transform.SetParent(slot.transform, false);
+        reelContainer.transform.localPosition = Vector3.zero;
+
+        // ── 현재 카드를 릴에 편입 ──
+        GameObject currentCard = slot.ReleaseCard();
+        currentCard.transform.SetParent(reelContainer.transform);
+        currentCard.transform.localPosition = Vector3.zero;
+
+        foreach (var sr in currentCard.GetComponentsInChildren<SpriteRenderer>())
+        {
+            sr.maskInteraction = SpriteMaskInteraction.VisibleInsideMask;
+            sr.sortingOrder = 10;
+        }
+
+        List<GameObject> reelCards = new List<GameObject> { currentCard };
+
+        // ── 릴 카드 생성 (위에 쌓기: 위에서 아래로 낙하) ──
+        // 마지막 3장은 최종 결과와 동일 → 감속 구간에서 자연스러운 안착
+        int reelCount = 10;
+        int finalZoneStart = reelCount - 3; // index 7, 8, 9 = 최종 카드
+        int lastPickValue = oldCv.value;
+        for (int i = 1; i < reelCount; i++)
+        {
+            bool isFinalZone = (i >= finalZoneStart);
+            GameObject pickPrefab;
+            int pickValue;
+            bool pickIsJoker;
+
+            if (isFinalZone)
+            {
+                pickPrefab = finalPrefab;
+                pickValue = finalValue;
+                pickIsJoker = finalIsJoker;
+            }
+            else
+            {
+                // 이전 카드 및 최종 카드와 다른 카드가 나올 때까지 재시도
+                int attempts = 0;
+                do
+                {
+                    if (!deck.GetRandomPrefabOfType(type, out pickPrefab, out pickValue, out pickIsJoker))
+                    {
+                        pickPrefab = finalPrefab;
+                        pickValue = finalValue;
+                        pickIsJoker = finalIsJoker;
+                        break;
+                    }
+                    attempts++;
+                } while ((pickValue == lastPickValue || pickValue == finalValue) && attempts < 20);
+            }
+            lastPickValue = pickValue;
+
+            GameObject reelCard = Instantiate(pickPrefab, reelContainer.transform);
+            var cv = reelCard.GetComponent<CardValue>();
+            if (cv == null) cv = reelCard.AddComponent<CardValue>();
+            cv.value = pickValue;
+            cv.isJoker = pickIsJoker;
+            cv.cardType = type;
+
+            // 슬롯에 맞게 크기 조정
+            RerollFitCard(reelCard, slotCol);
+
+            // 위에 배치
+            reelCard.transform.localPosition = new Vector3(0f, cardSpacing * i, 0f);
+
+            // 마스크 인터랙션 + 소팅
+            foreach (var sr in reelCard.GetComponentsInChildren<SpriteRenderer>())
+            {
+                sr.maskInteraction = SpriteMaskInteraction.VisibleInsideMask;
+                sr.sortingOrder = 10;
+            }
+
+            // 콜라이더 비활성화
+            foreach (var c in reelCard.GetComponentsInChildren<Collider2D>())
+                c.enabled = false;
+
+            reelCards.Add(reelCard);
+        }
+
+        // ── 릴 전체를 아래로 슬라이드 (슬롯머신 낙하) ──
+        float totalDist = cardSpacing * (reelCount - 1);
+        float duration = 1.2f;
+
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            // ease-out cubic: 처음 빠르고 끝에서 느려짐
+            float eased = 1f - (1f - t) * (1f - t) * (1f - t);
+            reelContainer.transform.localPosition = new Vector3(0f, -totalDist * eased, 0f);
+            yield return null;
+        }
+        reelContainer.transform.localPosition = new Vector3(0f, -totalDist, 0f);
+
+        // ── 정리: 최종 카드만 남기고 나머지 제거 ──
+        GameObject finalCard = reelCards[reelCards.Count - 1];
+
+        // 마스크 인터랙션 복원
+        foreach (var sr in finalCard.GetComponentsInChildren<SpriteRenderer>())
+            sr.maskInteraction = SpriteMaskInteraction.None;
+
+        // 최종 카드를 슬롯에 배치
+        finalCard.transform.SetParent(null);
+        slot.PlaceCard(finalCard);
+
+        // 나머지 정리
+        Destroy(reelContainer);
+        Destroy(maskObj);
+        if (maskTex != null) Destroy(maskTex);
+
+        // ── 리롤 횟수 차감 ──
+        _slotRerollsRemaining--;
+        UpdateRerollCountUI();
+        _isRerolling = false;
+    }
+
+    private void RerollFitCard(GameObject card, Collider2D slotCol)
+    {
+        Vector2 slotSize = slotCol.bounds.size;
+        var renderer = card.GetComponentInChildren<Renderer>();
+        if (renderer == null) return;
+        Vector3 cardSize = renderer.bounds.size;
+        if (cardSize.x < 0.001f || cardSize.y < 0.001f) return;
+        float scale = Mathf.Min(slotSize.x / cardSize.x, slotSize.y / cardSize.y);
+        card.transform.localScale *= scale;
+    }
+
+    private void UpdateRerollCountUI()
+    {
+        // 리롤 잔량은 오버레이 이미지 자르기로 표시 (UpdateSlotReroll에서 처리)
     }
 
     // ─────────────────────────────────────────

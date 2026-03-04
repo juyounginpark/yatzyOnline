@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 // ─────────────────────────────────────────────
 //  룰렛 세그먼트 정의
@@ -80,6 +81,10 @@ public class Roulette : MonoBehaviour
     [Tooltip("룰렛 슬라이드 거리 (아래 방향)")]
     public float slideDistance = 1000f;
 
+    [Header("─ 리롤 설정 ─")]
+    [Tooltip("레벨업당 리롤 횟수")]
+    public int maxRerolls = 2;
+
     // ── 결과 (외부 참조용) ──
     public RouletteSegment ResultSegment { get; private set; }
     public GameObject ResultCardPrefab { get; private set; }
@@ -91,6 +96,8 @@ public class Roulette : MonoBehaviour
     private Vector2 _rouletteShowPos;
     private Vector2 _rouletteHidePos;
     private GameObject _currentCardInstance;
+    private int _rerollsRemaining;
+    private TMP_Text _rerollButtonText;
 
     public bool IsSpinning => _isSpinning;
 
@@ -114,7 +121,10 @@ public class Roulette : MonoBehaviour
 
         // 버튼 이벤트
         if (rerollButton != null)
+        {
+            _rerollButtonText = rerollButton.GetComponentInChildren<TMP_Text>();
             rerollButton.onClick.AddListener(() => _rerollRequested = true);
+        }
         if (confirmButton != null)
             confirmButton.onClick.AddListener(() => _confirmRequested = true);
     }
@@ -128,6 +138,7 @@ public class Roulette : MonoBehaviour
         _isSpinning = true;
         ResultSegment = null;
         ResultCardPrefab = null;
+        _rerollsRemaining = maxRerolls;
 
         bool reroll = true;
 
@@ -190,7 +201,9 @@ public class Roulette : MonoBehaviour
                 // 결과 패널 페이드인 (동시 진행, 이것을 yield)
                 yield return StartCoroutine(FadeResultPanel(0f, 1f));
 
-                // ── 5) 리롤 / 확인 대기 ──
+                // ── 5) 리롤 버튼 상태 갱신 + 대기 ──
+                UpdateRerollButton();
+
                 _rerollRequested = false;
                 _confirmRequested = false;
 
@@ -209,7 +222,10 @@ public class Roulette : MonoBehaviour
                 resultPanel.SetActive(false);
 
                 if (_rerollRequested)
+                {
+                    _rerollsRemaining--;
                     reroll = true;
+                }
             }
             else
             {
@@ -255,6 +271,18 @@ public class Roulette : MonoBehaviour
             if (ResultCardPrefab != null && resultCardContainer != null)
                 _currentCardInstance = Instantiate(ResultCardPrefab, resultCardContainer);
         }
+    }
+
+    // ─────────────────────────────────────────
+    //  리롤 버튼 텍스트 + 활성 상태 갱신
+    // ─────────────────────────────────────────
+    private void UpdateRerollButton()
+    {
+        if (_rerollButtonText != null)
+            _rerollButtonText.text = $"ReRoll {_rerollsRemaining}";
+
+        if (rerollButton != null)
+            rerollButton.gameObject.SetActive(_rerollsRemaining > 0);
     }
 
     // ─────────────────────────────────────────

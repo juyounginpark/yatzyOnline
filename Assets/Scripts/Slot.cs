@@ -32,8 +32,8 @@ public class Slot : MonoBehaviour
         var col = GetComponent<Collider2D>();
         if (col == null || !col.OverlapPoint(mouseWorld)) return;
 
-        // 좌클릭: 덱으로 반환 (애니메이션)
-        if (allowReturn && Input.GetMouseButtonDown(0) && !_isFlipping)
+        // 우클릭: 덱으로 반환 (애니메이션)
+        if (allowReturn && Input.GetMouseButtonDown(1) && !_isFlipping)
         {
             StartCoroutine(ReturnAnimation());
         }

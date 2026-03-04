@@ -229,6 +229,16 @@ public class GameFlow : MonoBehaviour
         fx.SetActive(false);
     }
 
+    /// <summary>
+    /// 특정 슬롯의 이펙트를 즉시 분리합니다.
+    /// 슬롯 리롤 시 이전 카드와 함께 이펙트가 파괴되는 것을 방지합니다.
+    /// </summary>
+    public void DetachSlotEffect(int slotIndex)
+    {
+        if (slotIndex < 0 || slotIndex >= _slotEffects.Count) return;
+        DetachEffect(_slotEffects[slotIndex]);
+    }
+
     // ─────────────────────────────────────────
     //  이펙트 오브젝트 생성
     // ─────────────────────────────────────────

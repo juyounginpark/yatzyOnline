@@ -504,6 +504,28 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  같은 타입의 랜덤 카드 프리팹 반환 (슬롯 리롤용)
+    // ─────────────────────────────────────────
+    public bool GetRandomPrefabOfType(CardType type, out GameObject prefab, out int value, out bool isJoker)
+    {
+        prefab = null; value = 0; isJoker = false;
+
+        if (_prefabPool == null) return false;
+
+        var filtered = new List<CardPool>();
+        foreach (var p in _prefabPool)
+            if (p.cardType == type && !p.isJoker) filtered.Add(p);
+
+        if (filtered.Count == 0) return false;
+
+        var pick = filtered[UnityEngine.Random.Range(0, filtered.Count)];
+        prefab = pick.prefab;
+        value = pick.value;
+        isJoker = pick.isJoker;
+        return true;
+    }
+
+    // ─────────────────────────────────────────
     //  유효한 프리팹 풀 수집
     // ─────────────────────────────────────────
     private List<CardPool> BuildPrefabPool()
@@ -522,10 +544,17 @@ public class Deck : MonoBehaviour
                 if (card != null && card.prefab != null)
                 {
                     bool joker = (i == 6); // 7번째 카드는 조커
+
+                    // 프리팹에 CardValue가 있으면 그 값을 우선 사용 (이미지-값 불일치 방지)
+                    int cardValue = joker ? 0 : i + 1;
+                    var prefabCv = card.prefab.GetComponent<CardValue>();
+                    if (!joker && prefabCv != null && prefabCv.value > 0)
+                        cardValue = prefabCv.value;
+
                     pool.Add(new CardPool
                     {
                         prefab = card.prefab,
-                        value = joker ? 0 : i + 1,  // 원소 순서대로 1~6, 조커는 0
+                        value = cardValue,
                         isJoker = joker,
                         cardType = group.groupType,
                         poolIndex = pool.Count

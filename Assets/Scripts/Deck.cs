@@ -39,7 +39,7 @@ public class Deck : MonoBehaviour
     public GameObject cardBackPrefab;
 
     [Header("─ 드로우 설정 ─")]
-    public int drawCount = 5;
+    public int drawCount = 6;
     public int maxCards = 8;
 
     [Header("─ 스폰 위치 ─")]

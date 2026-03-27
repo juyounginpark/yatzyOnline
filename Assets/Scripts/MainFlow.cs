@@ -93,8 +93,7 @@ public class MainFlow : MonoBehaviour
     private bool _isPlayerTurn = true;
     private float _timer;
     private bool _isTransitioning;
-    private int _playerNextDraw = 1;
-    private int _oppNextDraw = 1;
+
     private bool _scoreSkipped;
 
     // AI 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
@@ -110,11 +109,13 @@ public class MainFlow : MonoBehaviour
     public bool IsPlayerTurn => _isPlayerTurn;
     public float TimeRemaining => Mathf.Max(0f, _timer);
     public bool IsTransitioning => _isTransitioning;
+    public bool IsRouletteActive => roulette != null && roulette.IsSpinning;
 
     void Start()
     {
         _timer = turnTime;
         _isPlayerTurn = true;
+        _slotRerollsRemaining = maxSlotRerolls;
 
         // OppAuto 참조 캐시
         _oppAuto = FindObjectOfType<OppAuto>();
@@ -150,19 +151,17 @@ public class MainFlow : MonoBehaviour
 
     void Update()
     {
-        if (_isTransitioning) return;
-
-        // 상대 턴이고 AI가 카드 애니메이션 중이면 타이머 일시정지
+        // 타이머는 전환/룰렛 중에도 계속 흐름
         bool oppAnimating = !_isPlayerTurn && _oppAuto != null && _oppAuto.IsAnimating;
-
         if (!oppAnimating)
             _timer -= Time.deltaTime;
 
-        // 버튼 텍스트에 남은 시간 표시 (전환 중이 아닐 때만)
-        if (endTurnButtonText != null && !_isTransitioning)
+        if (endTurnButtonText != null)
             endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
 
-        if (_timer <= 0f && !oppAnimating)
+        if (_isTransitioning) return;
+
+        if (_timer <= 0f && !oppAnimating && !IsRouletteActive)
         {
             EndTurn();
         }
@@ -177,7 +176,7 @@ public class MainFlow : MonoBehaviour
     // ─────────────────────────────────────────
     public void EndTurn()
     {
-        if (_isTransitioning) return;
+        if (_isTransitioning || IsRouletteActive) return;
         if (endTurnButtonText != null)
             endTurnButtonText.text = "...";
         if (endTurnButton != null)
@@ -393,11 +392,11 @@ public class MainFlow : MonoBehaviour
                 }
             }
 
-            // 공격 후: 상대 슬롯에 남아있던 카드 제거 (뒷면 카드는 유지)
-            Slot[] victimSlots = _isPlayerTurn ? oppSlots : playerSlots;
-            if (victimSlots != null)
+            // 공격 후: 적 턴 종료 시에만 oppSlots 정리
+            // 플레이어가 적 턴 중에 둔 카드는 유지 (다음 플레이어 턴에서 사용)
+            if (_isPlayerTurn && oppSlots != null)
             {
-                foreach (var slot in victimSlots)
+                foreach (var slot in oppSlots)
                 {
                     if (slot != null && slot.HasCard)
                         slot.ClearCard();
@@ -406,20 +405,10 @@ public class MainFlow : MonoBehaviour
 
         }
 
-        // ── 공격 후 EXP 추가 (레벨업 시 룰렛 → 완료 후 남은 EXP 계속) ──
-        if (_isPlayerTurn && exp != null && turnScore > 0f)
-        {
-            // 룰렛이 있으면 레벨업 콜백으로 전달 → LEVEL UP 표시 후 룰렛 완료까지 EXP 멈춤
-            System.Func<IEnumerator> levelUpCallback = null;
-            if (roulette != null)
-                levelUpCallback = () => roulette.SpinAndReward();
-
-            yield return StartCoroutine(exp.AddExpAnimated(
-                Mathf.RoundToInt(turnScore),
-                levelUpCallback
-            ));
-            Debug.Log($"[MainFlow] EXP +{Mathf.RoundToInt(turnScore)} 완료");
-        }
+        // EXP는 전환 완료 후에 처리하기 위해 저장
+        bool wasPlayerTurn = _isPlayerTurn;
+        int savedExpAmount = (wasPlayerTurn && exp != null && turnScore > 0f)
+            ? Mathf.RoundToInt(turnScore) : 0;
 
         // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀
         if (slotsToRelease != null)
@@ -450,16 +439,6 @@ public class MainFlow : MonoBehaviour
             }
         }
 
-        // ── 드로우 수 계산: 낸 카드 수 - 1 (최소 1) ──
-        if (originalAttackCardCount > 0)
-        {
-            int attackerDraw = Mathf.Max(originalAttackCardCount - 1, 1);
-            if (_isPlayerTurn)
-                _playerNextDraw = attackerDraw;
-            else
-                _oppNextDraw = attackerDraw;
-        }
-
         // 턴 전환
         _isPlayerTurn = !_isPlayerTurn;
         _timer = turnTime;
@@ -470,14 +449,20 @@ public class MainFlow : MonoBehaviour
             gui.isScoreOverridden = false;
         }
 
-        // 턴 전환 직후 드로우 (양쪽 모두)
-        for (int i = 0; i < _playerNextDraw; i++)
-            deck.AddOneCard();
-        _playerNextDraw = 1;
+        // 턴 전환 직후 드로우: 항상 6개 유지
+        // playerSlots에 남은 카드(상대 턴 중 플레이어가 배치한 카드)도 손패로 간주
+        int cardsInPlayerSlots = 0;
+        if (playerSlots != null)
+            foreach (var s in playerSlots)
+                if (s != null && s.HasCard) cardsInPlayerSlots++;
 
-        for (int i = 0; i < _oppNextDraw; i++)
+        int playerDraw = Mathf.Max(0, 6 - deck.SpawnedCards.Count - cardsInPlayerSlots);
+        for (int i = 0; i < playerDraw; i++)
+            deck.AddOneCard();
+
+        int oppDraw = Mathf.Max(0, 6 - oppDeck.SpawnedCards.Count);
+        for (int i = 0; i < oppDraw; i++)
             oppDeck.AddOneCard();
-        _oppNextDraw = 1;
 
         UpdateInteraction();
 
@@ -489,6 +474,17 @@ public class MainFlow : MonoBehaviour
             gameUI.isScoreOverridden = false;
 
         _isTransitioning = false;
+
+        // ── EXP + 룰렛: 전환 완료 후 실행 (게임이 정상 동작 중인 상태에서) ──
+        if (savedExpAmount > 0)
+        {
+            System.Func<IEnumerator> levelUpCallback = null;
+            if (roulette != null)
+                levelUpCallback = () => roulette.SpinAndReward();
+
+            yield return StartCoroutine(exp.AddExpAnimated(savedExpAmount, levelUpCallback));
+            Debug.Log($"[MainFlow] EXP +{savedExpAmount} 완료");
+        }
     }
 
     // ─────────────────────────────────────────
@@ -568,7 +564,7 @@ public class MainFlow : MonoBehaviour
     {
         // 플레이어 턴에만 슬롯 배치 허용
         if (deck != null)
-            deck.canPlaceInSlot = _isPlayerTurn;
+            deck.canPlaceInSlot = true;
 
         if (endTurnButton != null)
         {
@@ -576,10 +572,10 @@ public class MainFlow : MonoBehaviour
             endTurnButton.interactable = _isPlayerTurn;
         }
 
-        // 슬롯 리롤 횟수 초기화
+        // 슬롯 리롤 횟수 +1 (max 초과 불가)
         if (_isPlayerTurn)
         {
-            _slotRerollsRemaining = maxSlotRerolls;
+            _slotRerollsRemaining = Mathf.Min(_slotRerollsRemaining + 1, maxSlotRerolls);
             _slotCardPlacedTime.Clear();
             UpdateRerollCountUI();
             ClearRerollOverlay();
@@ -869,9 +865,9 @@ public class MainFlow : MonoBehaviour
         foreach (var sr in finalCard.GetComponentsInChildren<SpriteRenderer>())
             sr.maskInteraction = SpriteMaskInteraction.None;
 
-        // 최종 카드를 슬롯에 배치
+        // 최종 카드를 슬롯에 배치 (RerollFitCard로 이미 스케일 적용됐으므로 Raw 사용)
         finalCard.transform.SetParent(null);
-        slot.PlaceCard(finalCard);
+        slot.PlaceCardRaw(finalCard);
 
         // 나머지 정리
         Destroy(reelContainer);

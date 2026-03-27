@@ -41,7 +41,7 @@ public class OppAuto : MonoBehaviour
     {
         if (_acting) return;
         if (mainFlow == null) return;
-        if (mainFlow.IsPlayerTurn || mainFlow.IsTransitioning) return;
+        if (mainFlow.IsPlayerTurn || mainFlow.IsTransitioning || mainFlow.IsRouletteActive) return;
 
         _acting = true;
         StartCoroutine(DoOpponentTurn());
@@ -101,7 +101,7 @@ public class OppAuto : MonoBehaviour
         // 플립 완료 후 짧은 딜레이 → 턴 종료
         yield return new WaitForSeconds(0.2f);
 
-        if (!mainFlow.IsPlayerTurn && !mainFlow.IsTransitioning)
+        if (!mainFlow.IsPlayerTurn && !mainFlow.IsTransitioning && !mainFlow.IsRouletteActive)
             mainFlow.EndTurn();
 
         _acting = false;

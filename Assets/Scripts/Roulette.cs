@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -27,36 +28,24 @@ public class RouletteSegment
 
 // ─────────────────────────────────────────────
 //  레벨업 룰렛 시스템
-//  1) 룰렛이 아래에서 올라옴
-//  2) n초 동안 회전 후 원소 확정
-//  3) 룰렛이 내려가며 결과 UI 페이드인
-//  4) 리롤 버튼 → 카드 제거, 룰렛 다시 올라옴
-//  5) 확인 버튼 → 결과 확정
 // ─────────────────────────────────────────────
 public class Roulette : MonoBehaviour
 {
     [Header("─ 룰렛 UI ─")]
-    [Tooltip("룰렛 전체 패널 RectTransform (슬라이드 애니메이션용)")]
     public RectTransform rouletteRect;
-
-    [Tooltip("회전할 룰렛 휠")]
     public Transform wheelTransform;
 
     [Header("─ 결과 UI ─")]
-    [Tooltip("결과 패널 (Panel)")]
     public GameObject resultPanel;
 
-    [Tooltip("원소별 배경 이미지가 표시될 Image")]
-    public Image resultBackgroundImage;
+    [Tooltip("원소별 배경 이미지 (3개)")]
+    public Image[] resultBackgroundImages = new Image[3];
 
-    [Tooltip("카드 UI 프리팹이 생성될 부모 Transform")]
-    public Transform resultCardContainer;
+    [Tooltip("카드가 생성될 컨테이너 (3개)")]
+    public Transform[] resultCardContainers = new Transform[3];
 
     [Tooltip("리롤 버튼")]
     public Button rerollButton;
-
-    [Tooltip("확인 버튼")]
-    public Button confirmButton;
 
     [Header("─ 세그먼트 설정 ─")]
     public RouletteSegment[] segments = new RouletteSegment[]
@@ -69,20 +58,12 @@ public class Roulette : MonoBehaviour
     };
 
     [Header("─ 타이밍 설정 ─")]
-    [Tooltip("룰렛 회전 시간 (초)")]
     public float spinDuration = 3f;
-
-    [Tooltip("슬라이드 애니메이션 시간")]
     public float slideDuration = 0.5f;
-
-    [Tooltip("페이드 애니메이션 시간")]
     public float fadeDuration = 0.3f;
-
-    [Tooltip("룰렛 슬라이드 거리 (아래 방향)")]
     public float slideDistance = 1000f;
 
     [Header("─ 리롤 설정 ─")]
-    [Tooltip("레벨업당 리롤 횟수")]
     public int maxRerolls = 2;
 
     // ── 결과 (외부 참조용) ──
@@ -90,23 +71,24 @@ public class Roulette : MonoBehaviour
     public GameObject ResultCardPrefab { get; private set; }
 
     // ── 내부 상태 ──
+    public bool IsSpinning => _isSpinning;
     private bool _isSpinning;
     private bool _rerollRequested;
     private bool _confirmRequested;
     private Vector2 _rouletteShowPos;
     private Vector2 _rouletteHidePos;
-    private GameObject _currentCardInstance;
+    private readonly List<GameObject> _currentCardInstances = new List<GameObject>();
+    private readonly List<GameObject> _currentCardPrefabs = new List<GameObject>();
+    private readonly List<RouletteSegment> _currentCardSegments = new List<RouletteSegment>();
     private int _rerollsRemaining;
     private TMP_Text _rerollButtonText;
-
-    public bool IsSpinning => _isSpinning;
+    private Vector2[] _containerOrigPositions;
 
     // ─────────────────────────────────────────
     //  초기화
     // ─────────────────────────────────────────
     void Start()
     {
-        // 룰렛 표시/숨김 위치
         if (rouletteRect != null)
         {
             _rouletteShowPos = rouletteRect.anchoredPosition;
@@ -115,30 +97,41 @@ public class Roulette : MonoBehaviour
             rouletteRect.gameObject.SetActive(false);
         }
 
-        // 결과 패널 초기 숨김
         if (resultPanel != null)
             resultPanel.SetActive(false);
 
-        // 버튼 이벤트
+        // 컨테이너 원래 위치 저장
+        if (resultCardContainers != null)
+        {
+            _containerOrigPositions = new Vector2[resultCardContainers.Length];
+            for (int i = 0; i < resultCardContainers.Length; i++)
+            {
+                if (resultCardContainers[i] != null)
+                {
+                    var rt = resultCardContainers[i].GetComponent<RectTransform>();
+                    _containerOrigPositions[i] = rt != null ? rt.anchoredPosition : Vector2.zero;
+                }
+            }
+        }
+
         if (rerollButton != null)
         {
             _rerollButtonText = rerollButton.GetComponentInChildren<TMP_Text>();
             rerollButton.onClick.AddListener(() => _rerollRequested = true);
         }
-        if (confirmButton != null)
-            confirmButton.onClick.AddListener(() => _confirmRequested = true);
+
+        _rerollsRemaining = maxRerolls;
     }
 
     // ─────────────────────────────────────────
-    //  메인 플로우: 스핀 → 결과 → 리롤/확인 루프
+    //  메인 플로우
     // ─────────────────────────────────────────
     public IEnumerator SpinAndReward()
     {
-        Debug.Log($"[Roulette] SpinAndReward 시작 — rouletteRect={rouletteRect}, wheelTransform={wheelTransform}, resultPanel={resultPanel}");
         _isSpinning = true;
         ResultSegment = null;
         ResultCardPrefab = null;
-        _rerollsRemaining = maxRerolls;
+        _rerollsRemaining = Mathf.Min(_rerollsRemaining + 1, maxRerolls);
 
         bool reroll = true;
 
@@ -146,8 +139,7 @@ public class Roulette : MonoBehaviour
         {
             reroll = false;
 
-            // ── 1) 룰렛 아래에서 올라오기 ──
-            Debug.Log($"[Roulette] 1) 슬라이드 업 — rouletteRect null? {rouletteRect == null}");
+            // 1) 룰렛 슬라이드 업
             if (rouletteRect != null)
             {
                 rouletteRect.anchoredPosition = _rouletteHidePos;
@@ -155,7 +147,7 @@ public class Roulette : MonoBehaviour
                 yield return StartCoroutine(SlideRoulette(_rouletteHidePos, _rouletteShowPos));
             }
 
-            // ── 2) n초 동안 회전 (ease-out cubic 감속) ──
+            // 2) 회전
             float targetAngle = UnityEngine.Random.Range(0f, 360f);
             float totalRotation = 360f * UnityEngine.Random.Range(3, 6) + targetAngle;
             float startZ = wheelTransform != null ? wheelTransform.localEulerAngles.z : 0f;
@@ -166,56 +158,42 @@ public class Roulette : MonoBehaviour
                 elapsed += Time.deltaTime;
                 float t = Mathf.Clamp01(elapsed / spinDuration);
                 float eased = 1f - (1f - t) * (1f - t) * (1f - t);
-
                 if (wheelTransform != null)
                     wheelTransform.localEulerAngles = new Vector3(0f, 0f, startZ + totalRotation * eased);
-
                 yield return null;
             }
 
-            // 최종 각도 고정
             float finalZ = startZ + totalRotation;
             if (wheelTransform != null)
                 wheelTransform.localEulerAngles = new Vector3(0f, 0f, finalZ);
 
-            // ── 3) 원소 확정 (0도 위치) ──
+            // 3) 세그먼트 확정
             float resultAngle = ((finalZ % 360f) + 360f) % 360f;
             ResultSegment = GetSegmentAtAngle(resultAngle);
-
             if (ResultSegment == null && segments.Length > 0)
                 ResultSegment = segments[0];
 
-            Debug.Log($"[Roulette] 당첨: {ResultSegment?.segmentName} (각도: {resultAngle:F1}°)");
-
             yield return new WaitForSeconds(0.5f);
 
-            // ── 4) 룰렛 내려가기 + 결과 UI 페이드인 (동시) ──
+            // 4) 룰렛 내려가기 + 결과 UI 표시
             if (ResultSegment != null)
             {
-                // 결과 UI 내용 세팅
                 SetupResultUI(ResultSegment);
-
-                // 룰렛 슬라이드 다운 (fire-and-forget)
                 StartCoroutine(SlideRouletteAndHide(_rouletteShowPos, _rouletteHidePos));
-
-                // 결과 패널 페이드인 (동시 진행, 이것을 yield)
                 yield return StartCoroutine(FadeResultPanel(0f, 1f));
 
-                // ── 5) 리롤 버튼 상태 갱신 + 대기 ──
                 UpdateRerollButton();
-
                 _rerollRequested = false;
                 _confirmRequested = false;
 
+                // 카드 클릭 또는 리롤 대기
                 while (!_rerollRequested && !_confirmRequested)
                     yield return null;
 
-                // 카드 인스턴스 제거
-                if (_currentCardInstance != null)
-                {
-                    Destroy(_currentCardInstance);
-                    _currentCardInstance = null;
-                }
+                // 남은 카드 인스턴스 정리 (선택된 카드는 이미 중앙 이동 후 남아있을 수 있음)
+                foreach (var inst in _currentCardInstances)
+                    if (inst != null) Destroy(inst);
+                _currentCardInstances.Clear();
 
                 // 결과 패널 페이드아웃
                 yield return StartCoroutine(FadeResultPanel(1f, 0f));
@@ -229,7 +207,6 @@ public class Roulette : MonoBehaviour
             }
             else
             {
-                // 세그먼트 없음 — 룰렛만 숨기기
                 if (rouletteRect != null)
                 {
                     yield return StartCoroutine(SlideRoulette(_rouletteShowPos, _rouletteHidePos));
@@ -242,107 +219,212 @@ public class Roulette : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  결과 UI 세팅: 배경 이미지 + 카드 UI 프리팹 생성
+    //  결과 UI 세팅
     // ─────────────────────────────────────────
     private void SetupResultUI(RouletteSegment segment)
     {
-        // 배경 이미지
-        if (resultBackgroundImage != null)
+        // 컨테이너 재활성화 + 위치 원복 (이전 선택에서 이동/숨긴 것 복원)
+        if (resultCardContainers != null)
         {
-            resultBackgroundImage.sprite = segment.backgroundImage;
-            resultBackgroundImage.enabled = segment.backgroundImage != null;
+            for (int i = 0; i < resultCardContainers.Length; i++)
+            {
+                if (resultCardContainers[i] == null) continue;
+                resultCardContainers[i].gameObject.SetActive(true);
+                if (_containerOrigPositions != null && i < _containerOrigPositions.Length)
+                {
+                    var rt = resultCardContainers[i].GetComponent<RectTransform>();
+                    if (rt != null) rt.anchoredPosition = _containerOrigPositions[i];
+                }
+            }
         }
 
-        // 기존 카드 인스턴스 정리
-        if (_currentCardInstance != null)
-        {
-            Destroy(_currentCardInstance);
-            _currentCardInstance = null;
-        }
+        foreach (var inst in _currentCardInstances)
+            if (inst != null) Destroy(inst);
+        _currentCardInstances.Clear();
+        _currentCardPrefabs.Clear();
+        _currentCardSegments.Clear();
 
-        // 데이터베이스에서 랜덤 카드 UI 프리팹 선택 + 생성
         ResultCardPrefab = null;
+        ResultSegment = segment;
 
-        if (segment.cardUIPrefabs != null && segment.cardUIPrefabs.Length > 0)
+        UpdateResultBackground();
+
+        if (segment?.cardUIPrefabs == null || segment.cardUIPrefabs.Length == 0) return;
+
+        for (int i = 0; i < 3; i++)
         {
-            int idx = UnityEngine.Random.Range(0, segment.cardUIPrefabs.Length);
-            ResultCardPrefab = segment.cardUIPrefabs[idx];
+            var prefab = segment.cardUIPrefabs[UnityEngine.Random.Range(0, segment.cardUIPrefabs.Length)];
+            if (prefab == null) continue;
 
-            if (ResultCardPrefab != null && resultCardContainer != null)
-                _currentCardInstance = Instantiate(ResultCardPrefab, resultCardContainer);
+            _currentCardPrefabs.Add(prefab);
+            _currentCardSegments.Add(segment);
+
+            var container = (resultCardContainers != null && i < resultCardContainers.Length)
+                ? resultCardContainers[i] : null;
+            if (container == null) continue;
+
+            var inst = Instantiate(prefab, container);
+            _currentCardInstances.Add(inst);
+
+            // 버튼 추가
+            var btn = inst.GetComponent<Button>();
+            if (btn == null) btn = inst.AddComponent<Button>();
+
+            if (btn.targetGraphic == null)
+            {
+                var img = inst.GetComponent<Image>();
+                if (img == null)
+                {
+                    img = inst.AddComponent<Image>();
+                    img.color = Color.clear;
+                }
+                img.raycastTarget = true;
+                btn.targetGraphic = img;
+            }
+
+            // 자식 Image는 raycast 차단하지 않게
+            foreach (var childImg in inst.GetComponentsInChildren<Image>(true))
+            {
+                if (childImg.gameObject != inst)
+                    childImg.raycastTarget = false;
+            }
+
+            int capturedIndex = _currentCardInstances.Count - 1;
+            btn.onClick.RemoveAllListeners();
+            btn.onClick.AddListener(() => OnCardClicked(capturedIndex));
         }
+
+        ResultCardPrefab = _currentCardPrefabs.Count > 0 ? _currentCardPrefabs[0] : null;
     }
 
     // ─────────────────────────────────────────
-    //  리롤 버튼 텍스트 + 활성 상태 갱신
+    //  카드 클릭: 다른 카드 제거 → 중앙 이동 → 확인
+    // ─────────────────────────────────────────
+    private void OnCardClicked(int index)
+    {
+        if (_confirmRequested || _rerollRequested) return;
+        StartCoroutine(SelectAndConfirm(index));
+    }
+
+    private IEnumerator SelectAndConfirm(int index)
+    {
+        ResultCardPrefab = index < _currentCardPrefabs.Count ? _currentCardPrefabs[index] : null;
+        ResultSegment = index < _currentCardSegments.Count ? _currentCardSegments[index] : null;
+
+        // 다른 컨테이너(배경+카드) 숨기기
+        for (int i = 0; i < resultCardContainers.Length; i++)
+        {
+            if (i != index && resultCardContainers[i] != null)
+                resultCardContainers[i].gameObject.SetActive(false);
+        }
+
+        // 선택된 컨테이너를 X 중앙으로 이동 (Y 유지)
+        var container = (index < resultCardContainers.Length) ? resultCardContainers[index] : null;
+        if (container != null)
+        {
+            var rt = container as RectTransform ?? container.GetComponent<RectTransform>();
+            if (rt != null)
+            {
+                Vector2 startPos = rt.anchoredPosition;
+                Vector2 targetPos = new Vector2(0f, startPos.y);
+                float elapsed = 0f;
+                float duration = 0.35f;
+                while (elapsed < duration)
+                {
+                    elapsed += Time.deltaTime;
+                    float t = 1f - Mathf.Pow(1f - Mathf.Clamp01(elapsed / duration), 3f);
+                    rt.anchoredPosition = Vector2.Lerp(startPos, targetPos, t);
+                    yield return null;
+                }
+                rt.anchoredPosition = targetPos;
+            }
+            else
+            {
+                yield return new WaitForSeconds(0.2f);
+            }
+        }
+        else
+        {
+            yield return new WaitForSeconds(0.2f);
+        }
+
+        _confirmRequested = true;
+    }
+
+    // ─────────────────────────────────────────
+    //  리롤 버튼
     // ─────────────────────────────────────────
     private void UpdateRerollButton()
     {
         if (_rerollButtonText != null)
             _rerollButtonText.text = $"ReRoll {_rerollsRemaining}";
-
         if (rerollButton != null)
             rerollButton.gameObject.SetActive(_rerollsRemaining > 0);
     }
 
+    private void UpdateResultBackground()
+    {
+        if (resultBackgroundImages == null || ResultSegment == null) return;
+        foreach (var img in resultBackgroundImages)
+        {
+            if (img == null) continue;
+            img.sprite = ResultSegment.backgroundImage;
+            img.enabled = ResultSegment.backgroundImage != null;
+        }
+    }
+
     // ─────────────────────────────────────────
-    //  룰렛 슬라이드 애니메이션
+    //  슬라이드 / 페이드 애니메이션
     // ─────────────────────────────────────────
     private IEnumerator SlideRoulette(Vector2 from, Vector2 to)
     {
         if (rouletteRect == null) yield break;
-
         float elapsed = 0f;
         while (elapsed < slideDuration)
         {
             elapsed += Time.deltaTime;
             float t = Mathf.Clamp01(elapsed / slideDuration);
-            float eased = t * t * (3f - 2f * t); // smoothstep
+            float eased = t * t * (3f - 2f * t);
             rouletteRect.anchoredPosition = Vector2.Lerp(from, to, eased);
             yield return null;
         }
-
         rouletteRect.anchoredPosition = to;
     }
 
-    // ─────────────────────────────────────────
-    //  룰렛 슬라이드 다운 + 자동 비활성화
-    // ─────────────────────────────────────────
     private IEnumerator SlideRouletteAndHide(Vector2 from, Vector2 to)
     {
         yield return StartCoroutine(SlideRoulette(from, to));
-
         if (rouletteRect != null)
             rouletteRect.gameObject.SetActive(false);
     }
 
-    // ─────────────────────────────────────────
-    //  결과 패널 페이드 애니메이션 (모든 Graphic 알파)
-    // ─────────────────────────────────────────
     private IEnumerator FadeResultPanel(float from, float to)
     {
         if (resultPanel == null) yield break;
-
         resultPanel.SetActive(true);
 
         var graphics = resultPanel.GetComponentsInChildren<Graphic>(true);
 
-        // 페이드인 시: 이전 페이드아웃으로 알파 0이 된 Graphic 복원
-        if (to > from)
-        {
-            for (int i = 0; i < graphics.Length; i++)
-            {
-                Color c = graphics[i].color;
-                c.a = 1f;
-                graphics[i].color = c;
-            }
-        }
-
+        // 원래 색 캡처
         Color[] origColors = new Color[graphics.Length];
         for (int i = 0; i < graphics.Length; i++)
             origColors[i] = graphics[i].color;
 
-        // 시작 알파 적용
+        // 페이드인 시: 이전 페이드아웃으로 알파0이 된 Graphic만 복원 (원래 투명한 건 제외)
+        if (to > from)
+        {
+            for (int i = 0; i < graphics.Length; i++)
+            {
+                Color c = origColors[i];
+                if (c.a < 0.01f && (c.r > 0.01f || c.g > 0.01f || c.b > 0.01f))
+                {
+                    c.a = 1f;
+                    graphics[i].color = c;
+                    origColors[i] = c;
+                }
+            }
+        }
+
         for (int i = 0; i < graphics.Length; i++)
         {
             Color c = origColors[i];
@@ -354,9 +436,7 @@ public class Roulette : MonoBehaviour
         while (elapsed < fadeDuration)
         {
             elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / fadeDuration);
-            float alpha = Mathf.Lerp(from, to, t);
-
+            float alpha = Mathf.Lerp(from, to, Mathf.Clamp01(elapsed / fadeDuration));
             for (int i = 0; i < graphics.Length; i++)
             {
                 if (graphics[i] == null) continue;
@@ -364,11 +444,9 @@ public class Roulette : MonoBehaviour
                 c.a = origColors[i].a * alpha;
                 graphics[i].color = c;
             }
-
             yield return null;
         }
 
-        // 최종 알파
         for (int i = 0; i < graphics.Length; i++)
         {
             if (graphics[i] == null) continue;
@@ -384,28 +462,22 @@ public class Roulette : MonoBehaviour
     private RouletteSegment GetSegmentAtAngle(float angle)
     {
         angle = ((angle % 360f) + 360f) % 360f;
-
         foreach (var seg in segments)
         {
             float start = ((seg.startAngle % 360f) + 360f) % 360f;
             float end = ((seg.endAngle % 360f) + 360f) % 360f;
-
-            // endAngle가 360인 경우 보정
             if (Mathf.Approximately(end, 0f) && seg.endAngle > 0f)
                 end = 360f;
 
             if (start < end)
             {
-                if (angle >= start && angle < end)
-                    return seg;
+                if (angle >= start && angle < end) return seg;
             }
-            else // wrap around (예: 340° → 60°)
+            else
             {
-                if (angle >= start || angle < end)
-                    return seg;
+                if (angle >= start || angle < end) return seg;
             }
         }
-
         return null;
     }
 }

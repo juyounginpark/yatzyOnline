@@ -10,6 +10,9 @@ public class Slot : MonoBehaviour
     private bool _isFlipping;
     private Vector3 _cardFittedScale; // FitToSlot 후 카드 스케일 저장
 
+    // 같은 프레임에 여러 슬롯이 동시에 우클릭을 처리하는 것 방지
+    private static int _lastReturnFrame = -1;
+
     public bool allowReturn = true;
 
     public bool HasCard => _placedCard != null;
@@ -33,8 +36,11 @@ public class Slot : MonoBehaviour
         if (col == null || !col.OverlapPoint(mouseWorld)) return;
 
         // 우클릭: 덱으로 반환 (애니메이션)
-        if (allowReturn && Input.GetMouseButtonDown(1) && !_isFlipping)
+        // _lastReturnFrame 체크로 같은 프레임에 여러 슬롯이 동시에 처리되는 것 방지
+        if (allowReturn && Input.GetMouseButtonDown(1) && !_isFlipping
+            && _lastReturnFrame != Time.frameCount)
         {
+            _lastReturnFrame = Time.frameCount;
             StartCoroutine(ReturnAnimation());
         }
     }
@@ -91,6 +97,37 @@ public class Slot : MonoBehaviour
     /// <summary>
     /// 카드를 파괴하지 않고 슬롯에서 분리하여 반환
     /// </summary>
+    /// <summary>
+    /// FitToSlot 없이 카드를 배치 (이미 스케일이 맞춰진 경우 사용)
+    /// </summary>
+    public void PlaceCardRaw(GameObject card)
+    {
+        _placedCard = card;
+
+        var cv = card.GetComponent<CardValue>();
+        _placedCardValue = cv != null ? cv.value : 0;
+        _placedCardIsJoker = cv != null && cv.isJoker;
+        _placedCardType = cv != null ? cv.cardType : CardType.Attack;
+
+        card.transform.SetParent(transform);
+        card.transform.localPosition = Vector3.zero;
+        card.transform.localRotation = Quaternion.identity;
+
+        _cardFittedScale = card.transform.localScale;
+
+        var hover = card.GetComponent<CardHover>();
+        if (hover != null)
+            hover.enabled = false;
+
+        var colliders = card.GetComponentsInChildren<Collider2D>();
+        foreach (var c in colliders)
+            c.enabled = false;
+
+        var renderers = card.GetComponentsInChildren<Renderer>();
+        foreach (var r in renderers)
+            r.sortingOrder = 1;
+    }
+
     public GameObject ReleaseCard()
     {
         if (_placedCard == null) return null;

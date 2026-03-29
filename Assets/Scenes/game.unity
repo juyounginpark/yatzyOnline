@@ -492,6 +492,8 @@ MonoBehaviour:
   hitShakeDuration: 0.5
   hitShakeIntensity: 0.3
   cameraShakeIntensity: 0.08
+  isOnlineMode: 1
+  onlineOpponent: {fileID: 0}
   activeScale: 1
   inactiveScale: 0.7
   scaleDuration: 0.3

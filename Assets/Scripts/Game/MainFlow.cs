@@ -79,6 +79,13 @@ public class MainFlow : MonoBehaviour
     [Tooltip("카메라 흔들림 강도")]
     public float cameraShakeIntensity = 0.08f;
 
+    [Header("─ 온라인 모드 ─")]
+    [Tooltip("온라인 대전이면 true, 로컬 AI이면 false")]
+    public bool isOnlineMode = false;
+
+    [Tooltip("온라인 모드에서 사용하는 OnlineOpponent (OppAuto 대체)")]
+    public OnlineOpponent onlineOpponent;
+
     [Header("─ 턴 카드 크기 연출 ─")]
     [Tooltip("활성 턴 카드 스케일")]
     public float activeScale = 1.2f;
@@ -96,7 +103,7 @@ public class MainFlow : MonoBehaviour
 
     private bool _scoreSkipped;
 
-    // AI 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
+    // AI/온라인 상대 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
     private OppAuto _oppAuto;
 
     // ─── 슬롯 리롤 상태 ───
@@ -117,8 +124,33 @@ public class MainFlow : MonoBehaviour
         _isPlayerTurn = true;
         _slotRerollsRemaining = maxSlotRerolls;
 
-        // OppAuto 참조 캐시
+        // AI/온라인 상대 참조 캐시
         _oppAuto = FindObjectOfType<OppAuto>();
+
+        // 온라인 연결 중이면 자동으로 온라인 모드
+        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
+            isOnlineMode = true;
+
+        // 온라인 모드: OppAuto 비활성화, 선공/상대 설정
+        if (isOnlineMode)
+        {
+            if (_oppAuto != null) _oppAuto.enabled = false;
+
+            // onlineOpponent 탐색 — 없으면 자동 생성 후 즉시 Init
+            if (onlineOpponent == null)
+                onlineOpponent = FindObjectOfType<OnlineOpponent>();
+            if (onlineOpponent == null)
+            {
+                var go = new GameObject("OnlineOpponent");
+                onlineOpponent = go.AddComponent<OnlineOpponent>();
+                Debug.Log("[MainFlow] OnlineOpponent 자동 생성");
+            }
+            onlineOpponent.Init(this, oppDeck); // 즉시 구독 (Start() 대기 없음)
+
+            // OnGoFirstDecided는 씬 로드 전에 발생하므로 IGoFirst로 직접 읽음
+            if (NetworkManager.Instance != null)
+                _isPlayerTurn = NetworkManager.Instance.IGoFirst;
+        }
 
         if (endTurnButton != null)
             endTurnButton.onClick.AddListener(EndTurn);
@@ -151,8 +183,10 @@ public class MainFlow : MonoBehaviour
 
     void Update()
     {
-        // 타이머는 전환/룰렛 중에도 계속 흐름
-        bool oppAnimating = !_isPlayerTurn && _oppAuto != null && _oppAuto.IsAnimating;
+        // 타이머는 전환/룰렛 중에도 계속 흐름 (AI 또는 온라인 상대 애니메이션 중에는 정지)
+        bool oppAnimating = !_isPlayerTurn &&
+            ((!isOnlineMode && _oppAuto != null && _oppAuto.IsAnimating) ||
+             ( isOnlineMode && onlineOpponent != null && onlineOpponent.IsAnimating));
         if (!oppAnimating)
             _timer -= Time.deltaTime;
 
@@ -163,7 +197,42 @@ public class MainFlow : MonoBehaviour
 
         if (_timer <= 0f && !oppAnimating && !IsRouletteActive)
         {
-            EndTurn();
+            if (!isOnlineMode || _isPlayerTurn) // 온라인: 상대 턴에는 자동 종료 안 함
+                EndTurn();
+        }
+
+        // ── 온라인: NetworkManager 큐 폴링 ──
+        if (isOnlineMode && NetworkManager.Instance != null)
+        {
+            var nm = NetworkManager.Instance;
+
+            // CardPlace — 상대가 슬롯에 카드 놓은 것 표시
+            while (nm.IncomingCardPlaces.Count > 0)
+            {
+                var cp = nm.IncomingCardPlaces.Dequeue();
+                if (onlineOpponent != null)
+                    onlineOpponent.HandleCardPlaced(cp.slotIndex, cp.value, cp.cardType, cp.isJoker);
+            }
+
+            // CardReturn — 상대가 카드 반환
+            while (nm.IncomingCardReturns.Count > 0)
+            {
+                int si = nm.IncomingCardReturns.Dequeue();
+                if (onlineOpponent != null)
+                    onlineOpponent.HandleCardReturned(si);
+            }
+
+            // TurnEnd — 상대 턴 종료 처리 (내가 대기 중일 때만)
+            if (!_isPlayerTurn && !_isTransitioning && nm.IncomingTurnEnd != null)
+            {
+                var data = nm.IncomingTurnEnd;
+                nm.ConsumeIncomingTurnEnd();
+                Debug.Log("[MainFlow] 상대 TurnEnd 처리");
+                if (onlineOpponent != null)
+                    onlineOpponent.HandleTurnEnd(data);
+                else
+                    EndTurn();
+            }
         }
 
         // 슬롯 리롤 호버/클릭
@@ -254,6 +323,30 @@ public class MainFlow : MonoBehaviour
                 if (cv != null && cv.isJoker && resolvedValues != null && i < resolvedValues.Length)
                     cv.value = resolvedValues[i];
             }
+        }
+
+        // ── 온라인 모드: 내 턴 종료 시 슬롯 데이터 전송 ──
+        if (isOnlineMode && _isPlayerTurn && slotsToRelease != null
+            && NetworkManager.Instance != null)
+        {
+            var slotPackets = new SlotCardData[slotsToRelease.Length];
+            for (int i = 0; i < slotsToRelease.Length; i++)
+            {
+                if (slotsToRelease[i] == null || !slotsToRelease[i].HasCard)
+                {
+                    slotPackets[i] = SlotCardData.Empty(i);
+                    continue;
+                }
+                var cv = slotsToRelease[i].GetCardValue();
+                slotPackets[i] = new SlotCardData
+                {
+                    slotIndex = i,
+                    value     = cv != null ? cv.value    : 0,
+                    cardType  = cv != null ? (int)cv.cardType : 0,
+                    isJoker   = cv != null && cv.isJoker,
+                };
+            }
+            NetworkManager.Instance.SendTurnEnd(slotPackets);
         }
 
         // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리, 뒷면·revealedOnly 카드는 제외)

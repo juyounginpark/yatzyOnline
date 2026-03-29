@@ -176,6 +176,18 @@ public class Slot : MonoBehaviour
             deck.AddJokerCard(type);
         else
             deck.AddCardByValue(value, type);
+
+        // 온라인: 상대에게 카드 반환 알림
+        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
+        {
+            var mf = FindObjectOfType<MainFlow>();
+            if (mf != null && mf.isOnlineMode && mf.playerSlots != null)
+            {
+                int idx = System.Array.IndexOf(mf.playerSlots, this);
+                if (idx >= 0)
+                    NetworkManager.Instance.SendCardReturn(idx);
+            }
+        }
     }
 
     private void FitToSlot(GameObject card)

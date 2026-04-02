@@ -4,7 +4,8 @@ public enum CardType
 {
     Attack,
     Critical,
-    Heal
+    Heal,
+    Chain
 }
 
 public class CardValue : MonoBehaviour

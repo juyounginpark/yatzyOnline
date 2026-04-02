@@ -337,7 +337,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Deck
   deckGroups:
-  - isActive: 1
+  - isActive: 0
     groupName: Normal
     groupType: 0
     cards:
@@ -391,6 +391,24 @@ MonoBehaviour:
       prefab: {fileID: 8002144047082630695, guid: 1837d2a79dc066f419af1a12d970699d, type: 3}
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 813d0b84fa870044c967ecfda8d0c3de, type: 3}
+  - isActive: 1
+    groupName: Chain
+    groupType: 3
+    cards:
+    - cardName: 1
+      prefab: {fileID: 8002144047082630695, guid: a450d3dc6877c944f88113e8324c4ad0, type: 3}
+    - cardName: 2
+      prefab: {fileID: 8002144047082630695, guid: a21ead105803c4e4bac6cfc7dac193f7, type: 3}
+    - cardName: 3
+      prefab: {fileID: 8002144047082630695, guid: 59d98eaa53455b24a86950e5b3ca26ab, type: 3}
+    - cardName: 4
+      prefab: {fileID: 8002144047082630695, guid: 9b5d86d2820728c4fbcc8a8ebf49a3d0, type: 3}
+    - cardName: 5
+      prefab: {fileID: 8002144047082630695, guid: 57e558e770e336a43a99434f82bd43cf, type: 3}
+    - cardName: 6
+      prefab: {fileID: 8002144047082630695, guid: b976d093b8a964a4da158b3de55ccb14, type: 3}
+    - cardName: Joker
+      prefab: {fileID: 8002144047082630695, guid: 2f9a2324b8db4f3429f388bf58e42533, type: 3}
   cardBackPrefab: {fileID: 8002144047082630695, guid: 76d02f272784433448ed9557901a4ab2, type: 3}
   drawCount: 6
   maxCards: 6
@@ -492,8 +510,9 @@ MonoBehaviour:
   hitShakeDuration: 0.5
   hitShakeIntensity: 0.3
   cameraShakeIntensity: 0.08
-  isOnlineMode: 1
+  isOnlineMode: 0
   onlineOpponent: {fileID: 0}
+  chainLockPrefab: {fileID: 8002144047082630695, guid: c04d85f42d70de84c87950486bb0e3cc, type: 3}
   activeScale: 1
   inactiveScale: 0.7
   scaleDuration: 0.3

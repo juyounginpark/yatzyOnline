@@ -132,10 +132,10 @@ public class OppAuto : MonoBehaviour
         // 현재 슬롯 상태
         int[] currentValues = GetSlotValues();
 
-        // 빈 슬롯 인덱스
+        // 빈 슬롯 인덱스 (체인 잠금 슬롯 제외)
         List<int> emptySlotIndices = new List<int>();
         for (int s = 0; s < oppSlots.Length; s++)
-            if (oppSlots[s] != null && !oppSlots[s].HasCard)
+            if (oppSlots[s] != null && !oppSlots[s].HasCard && !oppSlots[s].IsChainLocked)
                 emptySlotIndices.Add(s);
 
         if (emptySlotIndices.Count == 0) return result;

@@ -86,6 +86,10 @@ public class MainFlow : MonoBehaviour
     [Tooltip("온라인 모드에서 사용하는 OnlineOpponent (OppAuto 대체)")]
     public OnlineOpponent onlineOpponent;
 
+    [Header("─ 체인 카드 ─")]
+    [Tooltip("체인 잠금 시 슬롯 위에 표시할 프리팹")]
+    public GameObject chainLockPrefab;
+
     [Header("─ 턴 카드 크기 연출 ─")]
     [Tooltip("활성 턴 카드 스케일")]
     public float activeScale = 1.2f;
@@ -105,6 +109,13 @@ public class MainFlow : MonoBehaviour
 
     // AI/온라인 상대 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
     private OppAuto _oppAuto;
+
+    // ─── 체인 도트 ───
+    private float _chainDotTotal;
+    private float _chainDotDealt;
+    private float _chainDotTickTimer;
+    private bool _chainDotTargetIsOpp; // true = 상대에게 도트, false = 플레이어에게 도트
+    private const float ChainDotTickInterval = 2f;
 
     // ─── 슬롯 리롤 상태 ───
     private int _slotRerollsRemaining;
@@ -192,6 +203,37 @@ public class MainFlow : MonoBehaviour
 
         if (endTurnButtonText != null)
             endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
+
+        // ── 체인 도트 데미지 틱 ──
+        if (_chainDotTotal > _chainDotDealt && !_isTransitioning)
+        {
+            _chainDotTickTimer -= Time.deltaTime;
+            if (_chainDotTickTimer <= 0f)
+            {
+                _chainDotTickTimer = ChainDotTickInterval;
+                float remaining = _chainDotTotal - _chainDotDealt;
+                float tick = Mathf.Min(remaining, _chainDotTotal / Mathf.Max(1f, turnTime / ChainDotTickInterval));
+                _chainDotDealt += tick;
+
+                if (hp != null)
+                {
+                    if (_chainDotTargetIsOpp)
+                        hp.DamageOpp(tick);
+                    else
+                        hp.DamagePlayer(tick);
+
+                    // 체인 잠금 슬롯 떨림 강조
+                    Slot[] dotSlots = _chainDotTargetIsOpp ? oppSlots : playerSlots;
+                    if (dotSlots != null)
+                    {
+                        Transform shakeRef = _chainDotTargetIsOpp
+                            ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
+                            : (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform);
+                        StartCoroutine(ShakeTransform(shakeRef, 0.2f, hitShakeIntensity * 0.5f));
+                    }
+                }
+            }
+        }
 
         if (_isTransitioning) return;
 
@@ -349,27 +391,67 @@ public class MainFlow : MonoBehaviour
             NetworkManager.Instance.SendTurnEnd(slotPackets);
         }
 
-        // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리, 뒷면·revealedOnly 카드는 제외)
+        // ── 체인 카드 매칭 집계 (수거 전에 계산) ──
+        int chainLockCount = 0;
+        HashSet<Slot> chainMatchedSlots = new HashSet<Slot>();
+
+        if (slotsToRelease != null && chainLockPrefab != null)
+        {
+            Dictionary<int, int> chainValueCount = new Dictionary<int, int>();
+            foreach (var slot in slotsToRelease)
+            {
+                if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
+                var cv = slot.GetCardValue();
+                if (cv != null && cv.cardType == CardType.Chain)
+                {
+                    int v = cv.value;
+                    if (!chainValueCount.ContainsKey(v))
+                        chainValueCount[v] = 0;
+                    chainValueCount[v]++;
+                }
+            }
+            foreach (var kvp in chainValueCount)
+                if (kvp.Value >= 2) chainLockCount += kvp.Value;
+
+            // 매칭된 체인 카드 슬롯 마킹
+            if (chainLockCount > 0)
+            {
+                foreach (var slot in slotsToRelease)
+                {
+                    if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
+                    var cv = slot.GetCardValue();
+                    if (cv != null && cv.cardType == CardType.Chain
+                        && chainValueCount.ContainsKey(cv.value)
+                        && chainValueCount[cv.value] >= 2)
+                        chainMatchedSlots.Add(slot);
+                }
+            }
+        }
+
+        // 슬롯에서 카드 수거 (Attack / Critical / Chain / Heal 분리, 체인 잠금·뒷면 카드 제외)
         List<GameObject> attackCards = new List<GameObject>();
         List<GameObject> criticalCards = new List<GameObject>();
+        List<GameObject> chainCards = new List<GameObject>();
         List<GameObject> healCards = new List<GameObject>();
 
-        // 슬롯에서 카드 수거 (Attack / Critical / Heal 분리)
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
+                if (slot.IsChainLocked) continue;
                 if (!slot.HasVisibleCard) continue;
                 var cv = slot.GetCardValue();
                 CardType type = cv != null ? cv.cardType : CardType.Attack;
                 var card = slot.ReleaseCard();
                 if (card != null)
                 {
-                    card.transform.localScale = Vector3.one; // 일단 기본 크기로
+                    card.transform.localScale = Vector3.one;
                     foreach (var r in card.GetComponentsInChildren<Renderer>())
                         r.sortingOrder = (type == CardType.Heal) ? 400 : 500;
-                    if (type == CardType.Heal)
+                    if (type == CardType.Chain && chainMatchedSlots.Contains(slot))
+                        chainCards.Add(card);
+                    else if (type == CardType.Heal)
                         healCards.Add(card);
                     else if (type == CardType.Critical)
                         criticalCards.Add(card);
@@ -383,6 +465,7 @@ public class MainFlow : MonoBehaviour
         List<GameObject> allReleasedCards = new List<GameObject>();
         allReleasedCards.AddRange(attackCards);
         allReleasedCards.AddRange(criticalCards);
+        allReleasedCards.AddRange(chainCards);
         allReleasedCards.AddRange(healCards);
 
         Vector3 uniformCardScale = Vector3.one;
@@ -410,9 +493,31 @@ public class MainFlow : MonoBehaviour
         List<GameObject> allCards = new List<GameObject>();
         allCards.AddRange(attackCards);
         allCards.AddRange(criticalCards);
+        allCards.AddRange(chainCards);
         allCards.AddRange(healCards);
 
         int originalAttackCardCount = allCards.Count;
+
+        // 체인 잠금 대상 슬롯 미리 결정
+        List<Slot> slotsToLock = new List<Slot>();
+        if (chainLockCount > 0 && chainCards.Count > 0)
+        {
+            Slot[] chainTargetSlots = _isPlayerTurn ? oppSlots : playerSlots;
+            if (chainTargetSlots != null)
+            {
+                List<Slot> available = new List<Slot>();
+                foreach (var slot in chainTargetSlots)
+                    if (slot != null && !slot.IsChainLocked)
+                        available.Add(slot);
+                for (int i = available.Count - 1; i > 0; i--)
+                {
+                    int j = Random.Range(0, i + 1);
+                    var tmp = available[i]; available[i] = available[j]; available[j] = tmp;
+                }
+                int actualLocks = Mathf.Min(chainLockCount, available.Count);
+                slotsToLock = available.GetRange(0, actualLocks);
+            }
+        }
 
         // 쇼케이스 중심점
         Vector3 showcaseCenter = (mySpawn.position + target.position) * 0.5f;
@@ -424,29 +529,32 @@ public class MainFlow : MonoBehaviour
             Vector3 healTarget = mySpawn.position;
             Transform shakeTarget = target;
 
-            // Attack/Critical 카드 → 공격 대상, Heal 카드 → 힐 대상
+            // Attack/Critical 카드 → 공격 대상
             List<GameObject> allAttackCards = new List<GameObject>();
             allAttackCards.AddRange(attackCards);
             allAttackCards.AddRange(criticalCards);
 
+            // 전체 카드 중앙으로 모으기
             yield return StartCoroutine(GatherToPoint(allCards, showcaseCenter));
             yield return new WaitForSeconds(0.3f);
 
-            // 공격 카드 먼저 날리기
+            // ① 공격 카드 먼저 날리기
             if (allAttackCards.Count > 0)
                 yield return StartCoroutine(FlyAndHit(allAttackCards, attackTarget));
 
             // HP 처리 (공격)
             if (hp != null && turnScore > 0f)
             {
-                int totalCount = attackCards.Count + criticalCards.Count + healCards.Count;
-                float attackRatio = (float)attackCards.Count / totalCount;
-                float criticalRatio = (float)criticalCards.Count / totalCount;
-                float healRatio = (float)healCards.Count / totalCount;
+                int totalCount = attackCards.Count + criticalCards.Count + chainCards.Count + healCards.Count;
+                float attackRatio = totalCount > 0 ? (float)attackCards.Count / totalCount : 0f;
+                float criticalRatio = totalCount > 0 ? (float)criticalCards.Count / totalCount : 0f;
+                float chainRatio = totalCount > 0 ? (float)chainCards.Count / totalCount : 0f;
+                float healRatio = totalCount > 0 ? (float)healCards.Count / totalCount : 0f;
 
                 float attackScore = turnScore * attackRatio;
                 float criticalScore = turnScore * criticalRatio * 2f; // 크리티컬 2배
                 float totalAttackScore = attackScore + criticalScore;
+                float chainDotScore = turnScore * chainRatio;
                 float healScore = turnScore * healRatio;
 
                 // 피격 연출
@@ -465,7 +573,29 @@ public class MainFlow : MonoBehaviour
                         hp.DamagePlayer(totalAttackScore);
                 }
 
-                // 공격 완료 + 진동 후 0.5초 대기 → 힐 카드 날리기
+                // ② 체인 카드 → 상대 슬롯으로 날려서 잠금 + 도트 설정
+                if (chainCards.Count > 0 && slotsToLock.Count > 0)
+                {
+                    if (allAttackCards.Count > 0)
+                        yield return new WaitForSeconds(0.3f);
+                    yield return StartCoroutine(FlyChainCardsAndLock(chainCards, slotsToLock));
+
+                    // 도트 데미지 활성화
+                    if (chainDotScore > 0f)
+                    {
+                        _chainDotTotal = chainDotScore;
+                        _chainDotDealt = 0f;
+                        _chainDotTickTimer = 0f; // 첫 틱 즉시 발동
+                        _chainDotTargetIsOpp = _isPlayerTurn;
+                        Debug.Log($"[Chain DOT] total={chainDotScore:F1} targetIsOpp={_chainDotTargetIsOpp}");
+                    }
+                }
+                else
+                {
+                    foreach (var c in chainCards) Destroy(c);
+                }
+
+                // ③ 힐 카드 마지막
                 if (healCards.Count > 0)
                 {
                     yield return new WaitForSeconds(0.5f);
@@ -474,7 +604,6 @@ public class MainFlow : MonoBehaviour
 
                 if (healScore > 0f)
                 {
-                    // 힐 연출
                     IReadOnlyList<GameObject> healDeckCards = _isPlayerTurn ? deck.SpawnedCards : oppDeck.SpawnedCards;
                     yield return StartCoroutine(HealGreenWave(healDeckCards, healScore));
 
@@ -484,18 +613,69 @@ public class MainFlow : MonoBehaviour
                         hp.HealOpp(healScore);
                 }
             }
+            else
+            {
+                // 점수 없을 때도 체인 잠금은 처리 (카드 값 합산으로 DOT)
+                if (chainCards.Count > 0 && slotsToLock.Count > 0)
+                {
+                    yield return StartCoroutine(FlyChainCardsAndLock(chainCards, slotsToLock));
+
+                    float chainValSum = 0f;
+                    foreach (var c in chainCards)
+                    {
+                        var cv = c != null ? c.GetComponent<CardValue>() : null;
+                        if (cv != null) chainValSum += cv.value;
+                    }
+                    if (chainValSum > 0f)
+                    {
+                        _chainDotTotal = chainValSum;
+                        _chainDotDealt = 0f;
+                        _chainDotTickTimer = 0f;
+                        _chainDotTargetIsOpp = _isPlayerTurn;
+                    }
+                }
+                else
+                    foreach (var c in chainCards) Destroy(c);
+            }
 
             // 공격 후: 적 턴 종료 시에만 oppSlots 정리
-            // 플레이어가 적 턴 중에 둔 카드는 유지 (다음 플레이어 턴에서 사용)
+            // 체인 잠금 슬롯은 유지
             if (_isPlayerTurn && oppSlots != null)
             {
                 foreach (var slot in oppSlots)
                 {
-                    if (slot != null && slot.HasCard)
+                    if (slot != null && slot.HasCard && !slot.IsChainLocked)
                         slot.ClearCard();
                 }
             }
 
+        }
+
+        // ── 공격 이후 체인 잠금 해제 + 도트 정산 ──
+        Slot[] chainedSlots = _isPlayerTurn ? playerSlots : oppSlots;
+        if (chainedSlots != null)
+        {
+            bool hadChain = false;
+            foreach (var slot in chainedSlots)
+            {
+                if (slot != null && slot.IsChainLocked)
+                {
+                    hadChain = true;
+                    yield return StartCoroutine(slot.UnlockChain());
+                }
+            }
+
+            // 남은 도트 데미지 즉시 정산
+            if (hadChain && _chainDotTotal > _chainDotDealt && hp != null)
+            {
+                float leftover = _chainDotTotal - _chainDotDealt;
+                if (_chainDotTargetIsOpp)
+                    hp.DamageOpp(leftover);
+                else
+                    hp.DamagePlayer(leftover);
+            }
+            _chainDotTotal = 0f;
+            _chainDotDealt = 0f;
         }
 
         // EXP는 전환 완료 후에 처리하기 위해 저장
@@ -503,12 +683,13 @@ public class MainFlow : MonoBehaviour
         int savedExpAmount = (wasPlayerTurn && exp != null && turnScore > 0f)
             ? Mathf.RoundToInt(turnScore) : 0;
 
-        // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀
+        // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀 (체인 잠금 슬롯 제외)
         if (slotsToRelease != null)
         {
             foreach (var slot in slotsToRelease)
             {
                 if (slot == null || !slot.HasCard) continue;
+                if (slot.IsChainLocked) continue;
 
                 var cv = slot.GetCardValue();
                 int value = cv != null ? cv.value : 0;
@@ -711,6 +892,7 @@ public class MainFlow : MonoBehaviour
         foreach (var slot in playerSlots)
         {
             if (slot == null || !slot.HasCard) continue;
+            if (slot.IsChainLocked) continue; // 체인 잠금 슬롯 리롤 불가
 
             // 배치 직후 0.5초간 리롤 오버레이 비활성
             if (_slotCardPlacedTime.TryGetValue(slot, out float placedTime)
@@ -1390,6 +1572,89 @@ public class MainFlow : MonoBehaviour
 
 
 
+
+    // ─────────────────────────────────────────
+    //  체인 카드 → 상대 슬롯 날리기 + 잠금
+    //  모든 체인 카드 동시에 날아가며 페이드아웃,
+    //  도착 시 체인 프리팹 페이드인
+    // ─────────────────────────────────────────
+    private IEnumerator FlyChainCardsAndLock(List<GameObject> chainCards, List<Slot> slotsToLock)
+    {
+        if (chainCards.Count == 0 || slotsToLock.Count == 0) yield break;
+
+        // 모든 체인 카드를 동시에 각 슬롯으로 날리기 (크기 고정)
+        for (int i = 0; i < chainCards.Count; i++)
+        {
+            Slot targetSlot = slotsToLock[i % slotsToLock.Count];
+            StartCoroutine(FlyOneChainCard(chainCards[i], targetSlot));
+        }
+
+        // 이동 완료 대기 + 슬롯 위에서 0.5초 보여주기
+        yield return new WaitForSeconds(attackDuration + 0.5f);
+
+        // 체인 카드 페이드아웃 + 체인 오버레이 페이드인 동시 진행
+        float fadeDuration = 0.4f;
+
+        // 체인 카드 페이드아웃 시작
+        List<Coroutine> fadeOuts = new List<Coroutine>();
+        foreach (var card in chainCards)
+        {
+            if (card != null)
+                fadeOuts.Add(StartCoroutine(FadeOutAndDestroy(card, fadeDuration)));
+        }
+
+        // 동시에 체인 오버레이 생성 + 페이드인
+        foreach (var slot in slotsToLock)
+        {
+            slot.ChainLock(chainLockPrefab);
+            StartCoroutine(slot.FadeInChain(fadeDuration));
+        }
+
+        yield return new WaitForSeconds(fadeDuration);
+    }
+
+    private IEnumerator FlyOneChainCard(GameObject card, Slot targetSlot)
+    {
+        if (card == null || targetSlot == null) yield break;
+
+        card.transform.SetParent(null);
+        Vector3 start = card.transform.position;
+        Vector3 end = targetSlot.transform.position;
+        float duration = attackDuration;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.Clamp01(elapsed / duration);
+            float ease = t * t;
+            card.transform.position = Vector3.Lerp(start, end, ease);
+            yield return null;
+        }
+
+        // 슬롯 위에 정확히 맞춤
+        card.transform.position = end;
+    }
+
+    private IEnumerator FadeOutAndDestroy(GameObject obj, float duration)
+    {
+        if (obj == null) yield break;
+        var renderers = obj.GetComponentsInChildren<SpriteRenderer>();
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float a = 1f - Mathf.Clamp01(elapsed / duration);
+            foreach (var sr in renderers)
+            {
+                Color c = sr.color;
+                c.a = a;
+                sr.color = c;
+            }
+            yield return null;
+        }
+        Destroy(obj);
+    }
 
     // ─────────────────────────────────────────
     //  피격 연출: 덱 흔들림

@@ -45,6 +45,20 @@ public class HP : MonoBehaviour
     public float PlayerHP => _playerHP;
     public float OppHP => _oppHP;
 
+    /// <summary>온라인 동기화용 — 애니메이션 없이 즉시 설정</summary>
+    public void SetPlayerHP(float value)
+    {
+        _playerHP = Mathf.Clamp(value, 0f, maxHP);
+        UpdateText(playerHPText, _playerHP);
+    }
+
+    /// <summary>온라인 동기화용 — 애니메이션 없이 즉시 설정</summary>
+    public void SetOppHP(float value)
+    {
+        _oppHP = Mathf.Clamp(value, 0f, maxHP);
+        UpdateText(oppHPText, _oppHP);
+    }
+
     void Start()
     {
         _playerHP = maxHP;

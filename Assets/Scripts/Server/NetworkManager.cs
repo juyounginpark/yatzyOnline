@@ -58,7 +58,23 @@ public class NetworkManager : MonoBehaviour
     public readonly System.Collections.Generic.Queue<int> IncomingCardReturns
         = new System.Collections.Generic.Queue<int>();
     public SlotCardData[] IncomingTurnEnd { get; private set; }
-    public void ConsumeIncomingTurnEnd() => IncomingTurnEnd = null;
+    public int[]          IncomingChainLockIndices { get; private set; }
+    public float          IncomingSenderHp   { get; private set; } = -1f;
+    public float          IncomingReceiverHp { get; private set; } = -1f;
+    public void ConsumeIncomingTurnEnd()
+    {
+        IncomingTurnEnd = null;
+        IncomingChainLockIndices = null;
+        IncomingSenderHp   = -1f;
+        IncomingReceiverHp = -1f;
+    }
+
+    // ─── Sync 패킷 (실시간 타이머+HP) ───
+    public float IncomingSyncTimer      { get; private set; } = -1f;
+    public float IncomingSyncSenderHp   { get; private set; } = -1f;
+    public float IncomingSyncReceiverHp { get; private set; } = -1f;
+    public bool  HasIncomingSync        { get; private set; }
+    public void ConsumeIncomingSync() { HasIncomingSync = false; }
 
     // 하위 호환 — 이전 코드에서 참조하는 경우 대비
     public SlotCardData[] PendingTurnEnd => IncomingTurnEnd;
@@ -70,6 +86,12 @@ public class NetworkManager : MonoBehaviour
     private string _gameRoomToken;
     private bool   _pendingJoinRoom;
     private bool   _pendingGameStart;
+
+    // ─── 게임 서버 재접속 ───
+    private int   _joinRetryCount;
+    private float _joinRetryTimer;
+    private const int   MaxJoinRetries   = 3;
+    private const float JoinRetryDelay   = 2f;
 
     // ─────────────────────────────────────────
     //  이벤트
@@ -114,24 +136,22 @@ public class NetworkManager : MonoBehaviour
             OnGameReady?.Invoke();
         }
 
+        // 재접속 타이머
+        if (_joinRetryTimer > 0f)
+        {
+            _joinRetryTimer -= Time.deltaTime;
+            if (_joinRetryTimer <= 0f)
+                TryJoinGameServer();
+            return;
+        }
+
         if (_pendingGameToken == null) return;
 
-        string host  = _pendingGameHost;
-        ushort port  = _pendingGamePort;
         _gameRoomToken    = _pendingGameToken;
         _pendingGameToken = null;
+        _joinRetryCount   = 0;
 
-        Backend.Match.OnSessionJoinInServer += OnGameServerJoinedHandler;
-
-        ErrorInfo errorInfo;
-        Backend.Match.JoinGameServer(host, port, false, out errorInfo);
-
-        if (errorInfo.Category != ErrorCode.Success)
-        {
-            Debug.LogError("[Net] 게임 서버 연결 실패: " + errorInfo);
-            Backend.Match.OnSessionJoinInServer -= OnGameServerJoinedHandler;
-            State = NetState.Disconnected;
-        }
+        TryJoinGameServer();
     }
 
     // ─────────────────────────────────────────
@@ -330,16 +350,52 @@ public class NetworkManager : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  내부: 게임 서버 접속 시도 (재시도 지원)
+    // ─────────────────────────────────────────
+    private void TryJoinGameServer()
+    {
+        _joinRetryCount++;
+        Debug.Log($"[Net] 게임 서버 접속 시도 ({_joinRetryCount}/{MaxJoinRetries}) — {_pendingGameHost}:{_pendingGamePort}");
+
+        Backend.Match.OnSessionJoinInServer += OnGameServerJoinedHandler;
+
+        ErrorInfo errorInfo;
+        Backend.Match.JoinGameServer(_pendingGameHost, _pendingGamePort, false, out errorInfo);
+
+        if (errorInfo.Category != ErrorCode.Success)
+        {
+            Debug.LogError("[Net] 게임 서버 연결 실패: " + errorInfo);
+            Backend.Match.OnSessionJoinInServer -= OnGameServerJoinedHandler;
+            ScheduleRetryOrFail();
+        }
+    }
+
+    private void ScheduleRetryOrFail()
+    {
+        if (_joinRetryCount < MaxJoinRetries)
+        {
+            Debug.LogWarning($"[Net] {JoinRetryDelay}초 후 재시도... ({_joinRetryCount}/{MaxJoinRetries})");
+            _joinRetryTimer = JoinRetryDelay;
+        }
+        else
+        {
+            Debug.LogError("[Net] 게임 서버 접속 최종 실패 — 재시도 횟수 초과");
+            State = NetState.Disconnected;
+        }
+    }
+
+    // ─────────────────────────────────────────
     //  내부: 세션 목록 수신 (양쪽 입장 완료 = 게임 시작)
     // ─────────────────────────────────────────
     private void OnGameServerJoinedHandler(JoinChannelEventArgs args)
     {
         Backend.Match.OnSessionJoinInServer -= OnGameServerJoinedHandler;
-        Debug.Log("[Net] 게임 서버 접속 완료 — ErrInfo: " + args.ErrInfo.Category);
+        Debug.Log($"[Net] 게임 서버 접속 응답 — Category: {args.ErrInfo.Category}, Detail: {args.ErrInfo.Detail}");
+
         if (args.ErrInfo.Category != ErrorCode.Success)
         {
-            Debug.LogError("[Net] 게임 서버 접속 실패: " + args.ErrInfo);
-            State = NetState.Disconnected;
+            Debug.LogError($"[Net] 게임 서버 접속 실패: {args.ErrInfo} (시도 {_joinRetryCount}/{MaxJoinRetries})");
+            ScheduleRetryOrFail();
             return;
         }
         _pendingJoinRoom = true;
@@ -386,6 +442,11 @@ public class NetworkManager : MonoBehaviour
             case PacketType.TurnEnd:
                 Debug.Log("[Net] TurnEnd 큐에 저장");
                 IncomingTurnEnd = GamePacket.ParseTurnEnd(json);
+                IncomingChainLockIndices = GamePacket.ParseChainLockIndices(json);
+                float shp, rhp;
+                GamePacket.ParseHp(json, out shp, out rhp);
+                IncomingSenderHp   = shp;
+                IncomingReceiverHp = rhp;
                 break;
 
             case PacketType.CardPlace:
@@ -402,6 +463,16 @@ public class NetworkManager : MonoBehaviour
                 IncomingCardReturns.Enqueue((int)json["si"]);
                 break;
 
+            case PacketType.Sync:
+            {
+                float syncTm, syncShp, syncRhp;
+                GamePacket.ParseSync(json, out syncTm, out syncShp, out syncRhp);
+                IncomingSyncTimer      = syncTm;
+                IncomingSyncSenderHp   = syncShp;
+                IncomingSyncReceiverHp = syncRhp;
+                HasIncomingSync        = true;
+                break;
+            }
             case PacketType.GameOver:
                 OnGameOver?.Invoke((int)json["win"] == 1);
                 break;
@@ -420,11 +491,18 @@ public class NetworkManager : MonoBehaviour
     // ─────────────────────────────────────────
     //  5. 데이터 송신
     // ─────────────────────────────────────────
-    public void SendTurnEnd(SlotCardData[] slots)
+    public void SendTurnEnd(SlotCardData[] slots, int[] chainLockIndices = null,
+        float senderHp = -1f, float receiverHp = -1f)
     {
         if (State != NetState.InGame) { Debug.LogWarning("[Net] SendTurnEnd 무시 — State:" + State); return; }
-        Debug.Log($"[Net] TurnEnd 전송 — 슬롯 수: {slots?.Length ?? 0}");
-        SendRaw(GamePacket.MakeTurnEnd(slots));
+        Debug.Log($"[Net] TurnEnd 전송 — 슬롯 수: {slots?.Length ?? 0}, 체인잠금: {chainLockIndices?.Length ?? 0}, HP:{senderHp}/{receiverHp}");
+        SendRaw(GamePacket.MakeTurnEnd(slots, chainLockIndices, senderHp, receiverHp));
+    }
+
+    public void SendSync(float timer, float senderHp, float receiverHp)
+    {
+        if (State != NetState.InGame) return;
+        SendRaw(GamePacket.MakeSync(timer, senderHp, receiverHp));
     }
 
     public void SendCardPlace(int slotIndex, int value, CardType type, bool isJoker = false)

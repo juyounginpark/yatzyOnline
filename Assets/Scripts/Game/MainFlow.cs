@@ -5,149 +5,131 @@ using UnityEngine.UI;
 using TMPro;
 
 // ─────────────────────────────────────────────
-//  메인 턴 관리
-//  - 플레이어 / 상대 턴 전환
-//  - 제한 시간 초과 시 자동 턴넘김
-//  - 턴 종료 시 슬롯 카드가 상대 스폰으로 날아가 타격
+//  메인 턴 관리 (오케스트레이터)
+//
+//  실제 로직은 서브시스템에 위임:
+//    TurnAnimator       — 애니메이션 코루틴
+//    CardEffectPipeline — 카드 효과 (Attack/Critical/Chain/Heal)
+//    ChainDotSystem     — 체인 DOT 틱
+//    SlotRerollHandler  — 슬롯 리롤
 // ─────────────────────────────────────────────
 public class MainFlow : MonoBehaviour
 {
     [Header("─ 참조 ─")]
-    public Deck deck;
+    public Deck    deck;
     public OppDeck oppDeck;
-    public Slot[] playerSlots;
-    public Slot[] oppSlots;
+    public Slot[]  playerSlots;
+    public Slot[]  oppSlots;
 
     [Header("─ UI ─")]
-    public Button endTurnButton;
+    public Button   endTurnButton;
     public TMP_Text endTurnButtonText;
-    public Button sortByNumButton;
-    public Button sortByTypeButton;
-    public Button scoreUIButton;
+    public Button   sortByNumButton;
+    public Button   sortByTypeButton;
+    public Button   scoreUIButton;
 
     [Header("─ UI 캔버스 ─")]
-    [Tooltip("버튼 UI가 카드 위에 표시되도록 Canvas 설정")]
     public Canvas uiCanvas;
 
     [Header("─ 참조 (점수 표시용) ─")]
-    public GameFlow gameFlow;
-    public GameUI gameUI;
-    public HP hp;
-    public Exp exp;
-    public Roulette roulette;
+    public GameFlow  gameFlow;
+    public GameUI    gameUI;
+    public HP        hp;
+    public Exp       exp;
+    public Roulette  roulette;
 
     [Header("─ 슬롯 리롤 ─")]
-    [Tooltip("슬롯 카드 위에 표시할 리롤 이미지 프리팹")]
     public GameObject rerollImagePrefab;
-
-    [Tooltip("남은 리롤 횟수 텍스트 (스프라이트 오브젝트에 TMP 컴포넌트 포함)")]
     public GameObject rerollCountObject;
-
-    [Tooltip("턴당 최대 리롤 횟수")]
-    public int maxSlotRerolls = 2;
+    public int        maxSlotRerolls = 2;
 
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
 
     [Header("─ 쇼케이스 설정 ─")]
-    [Tooltip("중간 전시 시간")]
-    public float showcaseTime = 1f;
-
-    [Tooltip("쇼케이스 위치로 이동 시간")]
+    public float showcaseTime         = 1f;
     public float showcaseMoveDuration = 0.5f;
-
-    [Tooltip("정렬 애니메이션 시간")]
     public float showcaseSortDuration = 0.4f;
-
-    [Tooltip("쇼케이스 카드 간 간격")]
-    public float showcaseSpacing = 1.2f;
+    public float showcaseSpacing      = 1.2f;
 
     [Header("─ 공격 애니메이션 ─")]
-    [Tooltip("카드가 날아가는 시간")]
     public float attackDuration = 0.4f;
-
-    [Tooltip("카드 간 발사 딜레이")]
-    public float attackStagger = 0.06f;
+    public float attackStagger  = 0.06f;
 
     [Header("─ 피격 연출 ─")]
-    [Tooltip("피격 흔들림 시간")]
-    public float hitShakeDuration = 0.35f;
-
-    [Tooltip("덱 흔들림 강도")]
-    public float hitShakeIntensity = 0.15f;
-
-    [Tooltip("카메라 흔들림 강도")]
+    public float hitShakeDuration     = 0.35f;
+    public float hitShakeIntensity    = 0.15f;
     public float cameraShakeIntensity = 0.08f;
 
     [Header("─ 온라인 모드 ─")]
-    [Tooltip("온라인 대전이면 true, 로컬 AI이면 false")]
-    public bool isOnlineMode = false;
-
-    [Tooltip("온라인 모드에서 사용하는 OnlineOpponent (OppAuto 대체)")]
+    public bool           isOnlineMode = false;
     public OnlineOpponent onlineOpponent;
 
     [Header("─ 체인 카드 ─")]
-    [Tooltip("체인 잠금 시 슬롯 위에 표시할 프리팹")]
     public GameObject chainLockPrefab;
 
     [Header("─ 턴 카드 크기 연출 ─")]
-    [Tooltip("활성 턴 카드 스케일")]
-    public float activeScale = 1.2f;
-
-    [Tooltip("비활성 턴 카드 스케일")]
+    public float activeScale   = 1.2f;
     public float inactiveScale = 0.9f;
-
-    [Tooltip("스케일 전환 시간")]
     public float scaleDuration = 0.3f;
 
     // ─── 상태 ───
-    private bool _isPlayerTurn = true;
+    private bool  _isPlayerTurn = true;
     private float _timer;
-    private bool _isTransitioning;
+    private bool  _isTransitioning;
+    private bool  _scoreSkipped;
 
-    private bool _scoreSkipped;
-
-    // AI/온라인 상대 참조 (상대 턴 활동 중에는 타이머로 강제 전환 안 함)
     private OppAuto _oppAuto;
+    private int[]   _pendingChainLockIndices;  // 온라인 수신 체인 잠금 인덱스
 
-    // ─── 체인 도트 ───
-    private float _chainDotTotal;
-    private float _chainDotDealt;
-    private float _chainDotTickTimer;
-    private bool _chainDotTargetIsOpp; // true = 상대에게 도트, false = 플레이어에게 도트
-    private const float ChainDotTickInterval = 2f;
+    // ─── 온라인 Sync ───
+    private const float SyncInterval = 1f;
+    private float _syncTimer;
 
-    // ─── 슬롯 리롤 상태 ───
-    private int _slotRerollsRemaining;
-    private GameObject _rerollOverlay;
-    private Slot _hoveredRerollSlot;
-    private bool _isRerolling;
-    private readonly Dictionary<Slot, float> _slotCardPlacedTime = new Dictionary<Slot, float>();
+    // ─── 서브시스템 ───
+    private TurnAnimator      _animator;
+    private ChainDotSystem    _chainDot;
+    private SlotRerollHandler _reroll;
 
-    public bool IsPlayerTurn => _isPlayerTurn;
-    public float TimeRemaining => Mathf.Max(0f, _timer);
-    public bool IsTransitioning => _isTransitioning;
-    public bool IsRouletteActive => roulette != null && roulette.IsSpinning;
+    // ─── 공개 프로퍼티 ───
+    public bool  IsPlayerTurn    => _isPlayerTurn;
+    public float TimeRemaining   => Mathf.Max(0f, _timer);
+    public bool  IsTransitioning => _isTransitioning;
+    public bool  IsRouletteActive => roulette != null && roulette.IsSpinning;
 
+    // ─────────────────────────────────────────
+    //  초기화
+    // ─────────────────────────────────────────
     void Start()
     {
-        _timer = turnTime;
+        _timer        = turnTime;
         _isPlayerTurn = true;
-        _slotRerollsRemaining = maxSlotRerolls;
 
-        // AI/온라인 상대 참조 캐시
+        // 서브시스템 초기화
+        _animator = new TurnAnimator(this)
+        {
+            attackDuration       = attackDuration,
+            attackStagger        = attackStagger,
+            hitShakeDuration     = hitShakeDuration,
+            hitShakeIntensity    = hitShakeIntensity,
+            cameraShakeIntensity = cameraShakeIntensity,
+            showcaseMoveDuration = showcaseMoveDuration,
+        };
+        _chainDot = new ChainDotSystem(this, hp, _animator);
+        _reroll   = new SlotRerollHandler(this, playerSlots, deck, gameFlow,
+            rerollImagePrefab, maxSlotRerolls);
+
+        // AI/온라인 상대
         _oppAuto = FindObjectOfType<OppAuto>();
 
-        // 온라인 연결 중이면 자동으로 온라인 모드
-        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
+        if (NetworkManager.Instance != null
+            && NetworkManager.Instance.State == NetState.InGame)
             isOnlineMode = true;
 
-        // 온라인 모드: OppAuto 비활성화, 선공/상대 설정
         if (isOnlineMode)
         {
             if (_oppAuto != null) _oppAuto.enabled = false;
 
-            // onlineOpponent 탐색 — 없으면 자동 생성 후 즉시 Init
             if (onlineOpponent == null)
                 onlineOpponent = FindObjectOfType<OnlineOpponent>();
             if (onlineOpponent == null)
@@ -156,142 +138,192 @@ public class MainFlow : MonoBehaviour
                 onlineOpponent = go.AddComponent<OnlineOpponent>();
                 Debug.Log("[MainFlow] OnlineOpponent 자동 생성");
             }
-            onlineOpponent.Init(this, oppDeck); // 즉시 구독 (Start() 대기 없음)
+            onlineOpponent.Init(this, oppDeck);
 
-            // OnGoFirstDecided는 씬 로드 전에 발생하므로 IGoFirst로 직접 읽음
             if (NetworkManager.Instance != null)
                 _isPlayerTurn = NetworkManager.Instance.IGoFirst;
         }
 
+        // UI 바인딩
         if (endTurnButton != null)
             endTurnButton.onClick.AddListener(EndTurn);
-
         if (scoreUIButton != null)
             scoreUIButton.onClick.AddListener(() => _scoreSkipped = true);
-
         if (sortByNumButton != null)
-            sortByNumButton.onClick.AddListener(() => { if (deck != null && !_isTransitioning) deck.SortByNumber(); });
-
+            sortByNumButton.onClick.AddListener(() =>
+            {
+                if (deck != null && !_isTransitioning) deck.SortByNumber();
+            });
         if (sortByTypeButton != null)
-            sortByTypeButton.onClick.AddListener(() => { if (deck != null && !_isTransitioning) deck.SortByType(); });
+            sortByTypeButton.onClick.AddListener(() =>
+            {
+                if (deck != null && !_isTransitioning) deck.SortByType();
+            });
 
-        // UI Canvas가 카드 아래에 표시되도록 설정
         if (uiCanvas == null && endTurnButton != null)
             uiCanvas = endTurnButton.GetComponentInParent<Canvas>();
         if (uiCanvas != null)
         {
-            uiCanvas.renderMode = RenderMode.ScreenSpaceCamera;
-            uiCanvas.worldCamera = Camera.main;
+            uiCanvas.renderMode   = RenderMode.ScreenSpaceCamera;
+            uiCanvas.worldCamera  = Camera.main;
             uiCanvas.sortingOrder = 0;
         }
 
         UpdateInteraction();
-
-        // 초기 스케일: 플레이어 턴이므로 플레이어 확대, 상대 축소
         SetDeckScale(deck, activeScale);
         SetDeckScale(oppDeck, inactiveScale);
     }
 
+    // ─────────────────────────────────────────
+    //  매 프레임
+    // ─────────────────────────────────────────
     void Update()
     {
-        // 타이머는 전환/룰렛 중에도 계속 흐름 (AI 또는 온라인 상대 애니메이션 중에는 정지)
-        bool oppAnimating = !_isPlayerTurn &&
-            ((!isOnlineMode && _oppAuto != null && _oppAuto.IsAnimating) ||
-             ( isOnlineMode && onlineOpponent != null && onlineOpponent.IsAnimating));
-        if (!oppAnimating)
-            _timer -= Time.deltaTime;
+        // ── 타이머 ──
+        // 온라인: 내 턴일 때만 로컬 카운트다운, 상대 턴 타이머는 Sync 패킷으로 수신
+        // 오프라인: 기존 로직 유지
+        bool pauseTimer = _isTransitioning;
+        if (!isOnlineMode)
+            pauseTimer = pauseTimer || (!_isPlayerTurn && _oppAuto != null && _oppAuto.IsAnimating);
+        else
+            pauseTimer = pauseTimer || !_isPlayerTurn;  // 온라인: 상대 턴이면 로컬 카운트다운 정지
+
+        if (!pauseTimer) _timer -= Time.deltaTime;
 
         if (endTurnButtonText != null)
             endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
 
-        // ── 체인 도트 데미지 틱 ──
-        if (_chainDotTotal > _chainDotDealt && !_isTransitioning)
-        {
-            _chainDotTickTimer -= Time.deltaTime;
-            if (_chainDotTickTimer <= 0f)
-            {
-                _chainDotTickTimer = ChainDotTickInterval;
-                float remaining = _chainDotTotal - _chainDotDealt;
-                float tick = Mathf.Min(remaining, _chainDotTotal / Mathf.Max(1f, turnTime / ChainDotTickInterval));
-                _chainDotDealt += tick;
+        // ── 체인 DOT 틱 ──
+        if (_chainDot != null && _chainDot.IsActive)
+            _chainDot.Tick(Time.deltaTime);
 
-                if (hp != null)
-                {
-                    if (_chainDotTargetIsOpp)
-                        hp.DamageOpp(tick);
-                    else
-                        hp.DamagePlayer(tick);
-
-                    // 체인 잠금 슬롯 떨림 강조
-                    Slot[] dotSlots = _chainDotTargetIsOpp ? oppSlots : playerSlots;
-                    if (dotSlots != null)
-                    {
-                        Transform shakeRef = _chainDotTargetIsOpp
-                            ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
-                            : (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform);
-                        StartCoroutine(ShakeTransform(shakeRef, 0.2f, hitShakeIntensity * 0.5f));
-                    }
-                }
-            }
-        }
+        // ── 온라인 Sync 송수신 ──
+        if (isOnlineMode) UpdateOnlineSync();
 
         if (_isTransitioning) return;
 
-        if (_timer <= 0f && !oppAnimating && !IsRouletteActive)
+        // 시간 초과 → 자동 턴 종료
+        if (_timer <= 0f && !pauseTimer && !IsRouletteActive)
         {
-            if (!isOnlineMode || _isPlayerTurn) // 온라인: 상대 턴에는 자동 종료 안 함
+            if (!isOnlineMode || _isPlayerTurn)
                 EndTurn();
         }
 
-        // ── 온라인: NetworkManager 큐 폴링 ──
-        if (isOnlineMode && NetworkManager.Instance != null)
-        {
-            var nm = NetworkManager.Instance;
+        // 온라인 폴링
+        PollOnlinePackets();
 
-            // CardPlace — 상대가 슬롯에 카드 놓은 것 표시
-            while (nm.IncomingCardPlaces.Count > 0)
-            {
-                var cp = nm.IncomingCardPlaces.Dequeue();
-                if (onlineOpponent != null)
-                    onlineOpponent.HandleCardPlaced(cp.slotIndex, cp.value, cp.cardType, cp.isJoker);
-            }
-
-            // CardReturn — 상대가 카드 반환
-            while (nm.IncomingCardReturns.Count > 0)
-            {
-                int si = nm.IncomingCardReturns.Dequeue();
-                if (onlineOpponent != null)
-                    onlineOpponent.HandleCardReturned(si);
-            }
-
-            // TurnEnd — 상대 턴 종료 처리 (내가 대기 중일 때만)
-            if (!_isPlayerTurn && !_isTransitioning && nm.IncomingTurnEnd != null)
-            {
-                var data = nm.IncomingTurnEnd;
-                nm.ConsumeIncomingTurnEnd();
-                Debug.Log("[MainFlow] 상대 TurnEnd 처리");
-                if (onlineOpponent != null)
-                    onlineOpponent.HandleTurnEnd(data);
-                else
-                    EndTurn();
-            }
-        }
-
-        // 슬롯 리롤 호버/클릭
-        if (_isPlayerTurn && !_isTransitioning && !_isRerolling)
-            UpdateSlotReroll();
+        // 슬롯 리롤
+        if (_isPlayerTurn && !_isTransitioning && !_reroll.IsRerolling)
+            _reroll.Tick();
     }
 
     // ─────────────────────────────────────────
-    //  턴 넘기기 (버튼 onClick에 연결)
+    //  온라인 실시간 Sync (타이머 + HP)
+    // ─────────────────────────────────────────
+    private void UpdateOnlineSync()
+    {
+        if (NetworkManager.Instance == null) return;
+        var nm = NetworkManager.Instance;
+
+        // 내 턴이면 주기적으로 Sync 전송
+        if (_isPlayerTurn && !_isTransitioning)
+        {
+            _syncTimer -= Time.deltaTime;
+            if (_syncTimer <= 0f)
+            {
+                _syncTimer = SyncInterval;
+                float myHp  = hp != null ? hp.PlayerHP : 0f;
+                float oppHp = hp != null ? hp.OppHP    : 0f;
+                nm.SendSync(_timer, myHp, oppHp);
+            }
+        }
+
+        // 상대 Sync 수신 → 타이머 + HP 반영 (애니메이션 포함)
+        if (nm.HasIncomingSync)
+        {
+            _timer = nm.IncomingSyncTimer;
+            if (hp != null)
+            {
+                ApplyHpSync(nm.IncomingSyncSenderHp, isOpp: true);
+                ApplyHpSync(nm.IncomingSyncReceiverHp, isOpp: false);
+            }
+            nm.ConsumeIncomingSync();
+        }
+    }
+
+    /// <summary>Sync HP를 애니메이션 포함으로 반영 (차이가 1 이상일 때만)</summary>
+    private void ApplyHpSync(float syncValue, bool isOpp)
+    {
+        if (hp == null || syncValue < 0f) return;
+
+        float current = isOpp ? hp.OppHP : hp.PlayerHP;
+        float diff = syncValue - current;
+
+        if (Mathf.Abs(diff) < 1f) return;  // 변화 없음
+
+        if (diff < 0f)
+        {
+            // 데미지
+            if (isOpp) hp.DamageOpp(-diff);
+            else       hp.DamagePlayer(-diff);
+        }
+        else
+        {
+            // 회복
+            if (isOpp) hp.HealOpp(diff);
+            else       hp.HealPlayer(diff);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  온라인 패킷 폴링
+    // ─────────────────────────────────────────
+    private void PollOnlinePackets()
+    {
+        if (!isOnlineMode || NetworkManager.Instance == null) return;
+        var nm = NetworkManager.Instance;
+
+        while (nm.IncomingCardPlaces.Count > 0)
+        {
+            var cp = nm.IncomingCardPlaces.Dequeue();
+            if (onlineOpponent != null)
+                onlineOpponent.HandleCardPlaced(
+                    cp.slotIndex, cp.value, cp.cardType, cp.isJoker);
+        }
+
+        while (nm.IncomingCardReturns.Count > 0)
+        {
+            int si = nm.IncomingCardReturns.Dequeue();
+            if (onlineOpponent != null)
+                onlineOpponent.HandleCardReturned(si);
+        }
+
+        if (!_isPlayerTurn && !_isTransitioning && nm.IncomingTurnEnd != null)
+        {
+            var data = nm.IncomingTurnEnd;
+            _pendingChainLockIndices = nm.IncomingChainLockIndices;
+
+            // HP 동기화: 상대가 보낸 senderHp = 상대의 HP, receiverHp = 나의 HP
+            ApplyHpSync(nm.IncomingSenderHp, isOpp: true);
+            ApplyHpSync(nm.IncomingReceiverHp, isOpp: false);
+
+            nm.ConsumeIncomingTurnEnd();
+            Debug.Log($"[MainFlow] 상대 TurnEnd 처리 (체인잠금: {_pendingChainLockIndices?.Length ?? 0}개)");
+            if (onlineOpponent != null)
+                onlineOpponent.HandleTurnEnd(data);
+            else
+                EndTurn();
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  턴 종��� (버튼 / 타이머 / OnlineOpponent에서 호출)
     // ─────────────────────────────────────────
     public void EndTurn()
     {
         if (_isTransitioning || IsRouletteActive) return;
-        if (endTurnButtonText != null)
-            endTurnButtonText.text = "...";
-        if (endTurnButton != null)
-            endTurnButton.gameObject.SetActive(false);
+        if (endTurnButtonText != null) endTurnButtonText.text = "...";
+        if (endTurnButton != null)     endTurnButton.gameObject.SetActive(false);
         StartCoroutine(DoEndTurn());
     }
 
@@ -301,430 +333,308 @@ public class MainFlow : MonoBehaviour
     private IEnumerator DoEndTurn()
     {
         _isTransitioning = true;
+        _chainDot.Deactivate();  // 이전 턴 DOT 중단
+        Slot[] sourceSlots = _isPlayerTurn ? playerSlots : oppSlots;
 
-        // 내 스폰 위치
+        // ── 1. 점수 계산 ──
+        string comboName;
+        float turnScore = EvaluateSlots(sourceSlots, out comboName);
+
+        // ── 2. 점수 UI 표시 ──
+        if (turnScore > 0f)
+            yield return StartCoroutine(ShowScoreUI(turnScore, comboName));
+
+        // ── 3. 조커 최적 해석 ──
+        ResolveJokers(sourceSlots);
+
+        // ── 4. 온라인 패킷 전송 ──
+        SendTurnEndPacket(sourceSlots);
+
+        // ── 5. 효과 컨텍스트 생성 ──
+        var ctx = BuildEffectContext(turnScore, comboName);
+
+        // ── 6. 사전 처리 + 카드 해제 + 분류 ──
+        CardEffectPipeline.PrepareAndRelease(ctx);
+        var allCards = ctx.AllCards();
+        NormalizeCardScales(allCards);
+
+        // ── 7. 효과 실행 ──
+        if (allCards.Count > 0)
+        {
+            Vector3 showcaseCenter =
+                (ctx.HealTarget + ctx.AttackTarget) * 0.5f;
+            showcaseCenter.z = 0f;
+
+            yield return StartCoroutine(_animator.GatherToPoint(allCards, showcaseCenter));
+            yield return new WaitForSeconds(0.3f);
+
+            yield return StartCoroutine(CardEffectPipeline.ExecuteAll(ctx));
+        }
+
+        // 상대 슬롯 카드백은 유지 (PlaceCard 안전 체크가 새 배치 시 자동 파괴)
+
+        // ── 8. 턴 전환 준비 ──
+        bool wasPlayerTurn = _isPlayerTurn;
+        int savedExp = (wasPlayerTurn && exp != null && turnScore > 0f)
+            ? Mathf.RoundToInt(turnScore) : 0;
+
+        // 카드 회수 먼저 (체인 잠금 슬롯은 스킵 → 카드 잔류)
+        ReturnRemainingCards(sourceSlots);
+
+        // ── 9. 체인 잠금 해제 (카드 회수 후) ──
+        Slot[] chainedSlots = _isPlayerTurn ? playerSlots : oppSlots;
+        yield return StartCoroutine(_chainDot.UnlockAll(chainedSlots));
+
+        // ── 10. 턴 전환 ──
+        _isPlayerTurn = !_isPlayerTurn;
+        _timer = turnTime;
+
+        foreach (var gui in FindObjectsOfType<GameUI>())
+            gui.isScoreOverridden = false;
+
+        DrawCards();
+        UpdateInteraction();
+
+        yield return StartCoroutine(AnimateTurnScale());
+
+        if (gameUI != null) gameUI.isScoreOverridden = false;
+
+        // ── 11. EXP + 룰렛 ──
+        if (savedExp > 0)
+        {
+            System.Func<IEnumerator> levelUpCb = roulette != null
+                ? () => roulette.SpinAndReward()
+                : (System.Func<IEnumerator>)null;
+            yield return StartCoroutine(exp.AddExpAnimated(savedExp, levelUpCb));
+            Debug.Log($"[MainFlow] EXP +{savedExp} 완료");
+        }
+
+        // ── 12. 체인 DOT 틱 시작 ──
+        // 온라인: 내 턴일 때만 DOT 실행 (상대는 Sync로 HP 수신)
+        if (!isOnlineMode || _isPlayerTurn)
+        {
+            Slot[] activeSlots = _isPlayerTurn ? playerSlots : oppSlots;
+            _chainDot.Activate(activeSlots, !_isPlayerTurn);
+        }
+
+        // ── 13. 타이머 리셋 + 전환 완료 (모든 작업 끝난 후) ──
+        _timer = turnTime;
+        _syncTimer = 0f;  // 즉시 첫 Sync 전송
+        _isTransitioning = false;
+    }
+
+    // ═════════════════════════════════════════
+    //  헬퍼 메서드
+    // ═════════════════════════════════════════
+
+    private TurnEffectContext BuildEffectContext(float turnScore, string comboName)
+    {
         Transform mySpawn = _isPlayerTurn
             ? (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform)
             : (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform);
 
-        // 타격 목표: 상대의 스폰 위치
         Transform target = _isPlayerTurn
             ? (oppDeck.deckSpawnPoint != null ? oppDeck.deckSpawnPoint : oppDeck.transform)
             : (deck.deckSpawnPoint != null ? deck.deckSpawnPoint : deck.transform);
 
-        // ── 슬롯 카드 점수 계산 + UI 표시 + HP 차감 ──
-        Slot[] slotsToRelease = _isPlayerTurn ? playerSlots : oppSlots;
-        float turnScore = 0f;
-        string turnRule = "";
-        if (slotsToRelease != null)
+        // 온라인 수신 체인 잠금 인덱스 소비
+        List<int> chainIndices = null;
+        if (_pendingChainLockIndices != null)
         {
-            turnScore = EvaluateSlots(slotsToRelease, out turnRule);
-
-            if (turnScore > 0f && gameUI != null && gameUI.scoreText != null)
-            {
-                gameUI.isScoreOverridden = true;
-                gameUI.scoreText.gameObject.SetActive(true);
-                gameUI.scoreText.text = $"+{turnScore:F1}\n({turnRule})";
-
-                // 클릭으로 스킵 가능한 대기
-                _scoreSkipped = false;
-                float waited = 0f;
-                while (waited < 1f && !_scoreSkipped)
-                {
-                    waited += Time.deltaTime;
-                    yield return null;
-                }
-
-                // 버튼 상태 초기화 (pressed 색상 고정 방지)
-                if (scoreUIButton != null)
-                {
-                    scoreUIButton.OnDeselect(null);
-                    scoreUIButton.interactable = false;
-                    scoreUIButton.interactable = true;
-                }
-
-                gameUI.scoreText.gameObject.SetActive(false);
-                // isScoreOverridden는 전환 완료 시까지 유지 → 공격 후 잠깐 뜨는 문제 방지
-            }
-
-            // (EXP 추가는 공격 연출 이후로 이동됨)
+            chainIndices = new List<int>(_pendingChainLockIndices);
+            _pendingChainLockIndices = null;
         }
 
-        // 조커 해석 값을 카드에 할당 (정렬용)
-        int[] resolvedValues = null;
-        if (slotsToRelease != null && gameFlow != null)
+        return new TurnEffectContext
         {
-            string dummyName;
-            float dummyScore;
-            gameFlow.GetBestCombo(slotsToRelease, out dummyName, out dummyScore, out resolvedValues);
+            IsPlayerTurn    = _isPlayerTurn,
+            TurnScore       = turnScore,
+            ComboName       = comboName,
+            PlayerSlots     = playerSlots,
+            OppSlots        = oppSlots,
+            AttackTarget    = target.position,
+            HealTarget      = mySpawn.position,
+            ShakeTarget     = target,
+            Hp              = hp,
+            Animator        = _animator,
+            Host            = this,
+            Deck            = deck,
+            OppDeck         = oppDeck,
+            ChainLockPrefab = chainLockPrefab,
+            PresetChainTargetIndices = chainIndices,
+        };
+    }
 
-            for (int i = 0; i < slotsToRelease.Length; i++)
-            {
-                if (slotsToRelease[i] == null || !slotsToRelease[i].HasCard) continue;
-                var cv = slotsToRelease[i].GetCardValue();
-                if (cv != null && cv.isJoker && resolvedValues != null && i < resolvedValues.Length)
-                    cv.value = resolvedValues[i];
-            }
+    private float EvaluateSlots(Slot[] slots, out string ruleName)
+    {
+        ruleName = "";
+        if (gameFlow == null || slots == null) return 0f;
+        string comboName;
+        float comboScore;
+        gameFlow.GetBestCombo(slots, out comboName, out comboScore);
+        ruleName = comboName;
+        return comboScore;
+    }
+
+    private IEnumerator ShowScoreUI(float turnScore, string comboName)
+    {
+        if (turnScore <= 0f || gameUI == null || gameUI.scoreText == null)
+            yield break;
+
+        gameUI.isScoreOverridden = true;
+        gameUI.scoreText.gameObject.SetActive(true);
+        gameUI.scoreText.text = $"+{turnScore:F1}\n({comboName})";
+
+        _scoreSkipped = false;
+        float waited = 0f;
+        while (waited < 1f && !_scoreSkipped)
+        {
+            waited += Time.deltaTime;
+            yield return null;
         }
 
-        // ── 온라인 모드: 내 턴 종료 시 슬롯 데이터 전송 ──
-        if (isOnlineMode && _isPlayerTurn && slotsToRelease != null
-            && NetworkManager.Instance != null)
+        if (scoreUIButton != null)
         {
-            var slotPackets = new SlotCardData[slotsToRelease.Length];
-            for (int i = 0; i < slotsToRelease.Length; i++)
-            {
-                if (slotsToRelease[i] == null || !slotsToRelease[i].HasCard)
-                {
-                    slotPackets[i] = SlotCardData.Empty(i);
-                    continue;
-                }
-                var cv = slotsToRelease[i].GetCardValue();
-                slotPackets[i] = new SlotCardData
-                {
-                    slotIndex = i,
-                    value     = cv != null ? cv.value    : 0,
-                    cardType  = cv != null ? (int)cv.cardType : 0,
-                    isJoker   = cv != null && cv.isJoker,
-                };
-            }
-            NetworkManager.Instance.SendTurnEnd(slotPackets);
+            scoreUIButton.OnDeselect(null);
+            scoreUIButton.interactable = false;
+            scoreUIButton.interactable = true;
         }
 
-        // ── 체인 카드 매칭 집계 (수거 전에 계산) ──
-        int chainLockCount = 0;
-        HashSet<Slot> chainMatchedSlots = new HashSet<Slot>();
+        gameUI.scoreText.gameObject.SetActive(false);
+    }
 
-        if (slotsToRelease != null && chainLockPrefab != null)
+    private void ResolveJokers(Slot[] slots)
+    {
+        if (slots == null || gameFlow == null) return;
+        string dummyName;
+        float dummyScore;
+        int[] resolvedValues;
+        gameFlow.GetBestCombo(slots, out dummyName, out dummyScore, out resolvedValues);
+        for (int i = 0; i < slots.Length; i++)
         {
-            Dictionary<int, int> chainValueCount = new Dictionary<int, int>();
-            foreach (var slot in slotsToRelease)
-            {
-                if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
-                var cv = slot.GetCardValue();
-                if (cv != null && cv.cardType == CardType.Chain)
-                {
-                    int v = cv.value;
-                    if (!chainValueCount.ContainsKey(v))
-                        chainValueCount[v] = 0;
-                    chainValueCount[v]++;
-                }
-            }
-            foreach (var kvp in chainValueCount)
-                if (kvp.Value >= 2) chainLockCount += kvp.Value;
+            if (slots[i] == null || !slots[i].HasCard) continue;
+            var cv = slots[i].GetCardValue();
+            if (cv != null && cv.isJoker
+                && resolvedValues != null && i < resolvedValues.Length)
+                cv.value = resolvedValues[i];
+        }
+    }
 
-            // 매칭된 체인 카드 슬롯 마킹
-            if (chainLockCount > 0)
+    private void SendTurnEndPacket(Slot[] sourceSlots)
+    {
+        if (!isOnlineMode || !_isPlayerTurn || sourceSlots == null
+            || NetworkManager.Instance == null) return;
+
+        var packets = new SlotCardData[sourceSlots.Length];
+        for (int i = 0; i < sourceSlots.Length; i++)
+        {
+            if (sourceSlots[i] == null || !sourceSlots[i].HasCard)
             {
-                foreach (var slot in slotsToRelease)
-                {
-                    if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
-                    var cv = slot.GetCardValue();
-                    if (cv != null && cv.cardType == CardType.Chain
-                        && chainValueCount.ContainsKey(cv.value)
-                        && chainValueCount[cv.value] >= 2)
-                        chainMatchedSlots.Add(slot);
-                }
+                packets[i] = SlotCardData.Empty(i);
+                continue;
             }
+            var cv = sourceSlots[i].GetCardValue();
+            packets[i] = new SlotCardData
+            {
+                slotIndex = i,
+                value     = cv != null ? cv.value       : 0,
+                cardType  = cv != null ? (int)cv.cardType : 0,
+                isJoker   = cv != null && cv.isJoker,
+            };
         }
 
-        // 슬롯에서 카드 수거 (Attack / Critical / Chain / Heal 분리, 체인 잠금·뒷면 카드 제외)
-        List<GameObject> attackCards = new List<GameObject>();
-        List<GameObject> criticalCards = new List<GameObject>();
-        List<GameObject> chainCards = new List<GameObject>();
-        List<GameObject> healCards = new List<GameObject>();
+        // 체인 잠금 대상 인덱스 계산 (공격자 체인 카드 슬롯 = 잠금 위치)
+        int[] chainIndices = ComputeChainLockIndices(sourceSlots);
 
-        if (slotsToRelease != null)
+        // HP 동기화: 보내는 쪽(플레이어) HP + 상대 HP
+        float myHp  = hp != null ? hp.PlayerHP : -1f;
+        float oppHp = hp != null ? hp.OppHP    : -1f;
+        NetworkManager.Instance.SendTurnEnd(packets, chainIndices, myHp, oppHp);
+    }
+
+    /// <summary>매칭된 체인 카드의 슬롯 인덱스를 반환</summary>
+    private int[] ComputeChainLockIndices(Slot[] slots)
+    {
+        if (slots == null) return null;
+
+        // 같은 값의 체인 카드 수 집계
+        var chainValueCount = new System.Collections.Generic.Dictionary<int, int>();
+        for (int i = 0; i < slots.Length; i++)
         {
-            foreach (var slot in slotsToRelease)
+            if (slots[i] == null || !slots[i].HasCard || slots[i].IsChainLocked) continue;
+            var cv = slots[i].GetCardValue();
+            if (cv != null && cv.cardType == CardType.Chain)
             {
-                if (slot == null || !slot.HasCard) continue;
-                if (slot.IsChainLocked) continue;
-                if (!slot.HasVisibleCard) continue;
-                var cv = slot.GetCardValue();
-                CardType type = cv != null ? cv.cardType : CardType.Attack;
-                var card = slot.ReleaseCard();
-                if (card != null)
-                {
-                    card.transform.localScale = Vector3.one;
-                    foreach (var r in card.GetComponentsInChildren<Renderer>())
-                        r.sortingOrder = (type == CardType.Heal) ? 400 : 500;
-                    if (type == CardType.Chain && chainMatchedSlots.Contains(slot))
-                        chainCards.Add(card);
-                    else if (type == CardType.Heal)
-                        healCards.Add(card);
-                    else if (type == CardType.Critical)
-                        criticalCards.Add(card);
-                    else
-                        attackCards.Add(card);
-                }
+                int v = cv.value;
+                if (!chainValueCount.ContainsKey(v)) chainValueCount[v] = 0;
+                chainValueCount[v]++;
             }
         }
 
-        // 카드 크기 통일: playerSlots[0] 콜라이더 크기에 맞춤 (모든 카드 동일)
-        List<GameObject> allReleasedCards = new List<GameObject>();
-        allReleasedCards.AddRange(attackCards);
-        allReleasedCards.AddRange(criticalCards);
-        allReleasedCards.AddRange(chainCards);
-        allReleasedCards.AddRange(healCards);
-
-        Vector3 uniformCardScale = Vector3.one;
-        if (playerSlots != null && playerSlots.Length > 0 && playerSlots[0] != null)
+        // 2장 이상 매칭된 체인 카드 슬롯 인덱스 수집
+        var indices = new System.Collections.Generic.List<int>();
+        for (int i = 0; i < slots.Length; i++)
         {
-            var refCol = playerSlots[0].GetComponent<Collider2D>();
-            var deckRefScale = FindObjectOfType<Deck>();
-            if (refCol != null && deckRefScale != null && deckRefScale.cardBackPrefab != null)
-            {
-                var backSr = deckRefScale.cardBackPrefab.GetComponent<SpriteRenderer>();
-                if (backSr != null && backSr.sprite != null)
-                {
-                    Vector2 spriteSize = backSr.sprite.bounds.size;
-                    Vector2 slotSize = refCol.bounds.size;
-                    float s = Mathf.Min(slotSize.x / spriteSize.x, slotSize.y / spriteSize.y);
-                    uniformCardScale = new Vector3(s, s, 1f);
-                }
-            }
-        }
-        foreach (var card in allReleasedCards)
-        {
-            if (card != null) card.transform.localScale = uniformCardScale;
+            if (slots[i] == null || !slots[i].HasCard || slots[i].IsChainLocked) continue;
+            var cv = slots[i].GetCardValue();
+            if (cv != null && cv.cardType == CardType.Chain
+                && chainValueCount.ContainsKey(cv.value)
+                && chainValueCount[cv.value] >= 2)
+                indices.Add(i);
         }
 
-        List<GameObject> allCards = new List<GameObject>();
-        allCards.AddRange(attackCards);
-        allCards.AddRange(criticalCards);
-        allCards.AddRange(chainCards);
-        allCards.AddRange(healCards);
+        return indices.Count > 0 ? indices.ToArray() : null;
+    }
 
-        int originalAttackCardCount = allCards.Count;
+    private void NormalizeCardScales(List<GameObject> cards)
+    {
+        if (playerSlots == null || playerSlots.Length == 0
+            || playerSlots[0] == null) return;
 
-        // 체인 잠금 대상 슬롯 미리 결정
-        List<Slot> slotsToLock = new List<Slot>();
-        if (chainLockCount > 0 && chainCards.Count > 0)
+        var refCol     = playerSlots[0].GetComponent<Collider2D>();
+        var deckRef    = FindObjectOfType<Deck>();
+        if (refCol == null || deckRef == null
+            || deckRef.cardBackPrefab == null) return;
+
+        var backSr = deckRef.cardBackPrefab.GetComponent<SpriteRenderer>();
+        if (backSr == null || backSr.sprite == null) return;
+
+        Vector2 spriteSize = backSr.sprite.bounds.size;
+        Vector2 slotSize   = refCol.bounds.size;
+        float s = Mathf.Min(slotSize.x / spriteSize.x, slotSize.y / spriteSize.y);
+        Vector3 scale = new Vector3(s, s, 1f);
+
+        foreach (var card in cards)
+            if (card != null) card.transform.localScale = scale;
+    }
+
+    private void ReturnRemainingCards(Slot[] sourceSlots)
+    {
+        if (sourceSlots == null) return;
+        foreach (var slot in sourceSlots)
         {
-            Slot[] chainTargetSlots = _isPlayerTurn ? oppSlots : playerSlots;
-            if (chainTargetSlots != null)
+            if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
+            var cv      = slot.GetCardValue();
+            int value   = cv != null ? cv.value : 0;
+            bool isJoker = cv != null && cv.isJoker;
+            CardType type = cv != null ? cv.cardType : CardType.Attack;
+
+            slot.ClearCard();
+
+            if (_isPlayerTurn)
             {
-                List<Slot> available = new List<Slot>();
-                foreach (var slot in chainTargetSlots)
-                    if (slot != null && !slot.IsChainLocked)
-                        available.Add(slot);
-                for (int i = available.Count - 1; i > 0; i--)
-                {
-                    int j = Random.Range(0, i + 1);
-                    var tmp = available[i]; available[i] = available[j]; available[j] = tmp;
-                }
-                int actualLocks = Mathf.Min(chainLockCount, available.Count);
-                slotsToLock = available.GetRange(0, actualLocks);
-            }
-        }
-
-        // 쇼케이스 중심점
-        Vector3 showcaseCenter = (mySpawn.position + target.position) * 0.5f;
-        showcaseCenter.z = 0f;
-
-        if (allCards.Count > 0)
-        {
-            Vector3 attackTarget = target.position;
-            Vector3 healTarget = mySpawn.position;
-            Transform shakeTarget = target;
-
-            // Attack/Critical 카드 → 공격 대상
-            List<GameObject> allAttackCards = new List<GameObject>();
-            allAttackCards.AddRange(attackCards);
-            allAttackCards.AddRange(criticalCards);
-
-            // 전체 카드 중앙으로 모으기
-            yield return StartCoroutine(GatherToPoint(allCards, showcaseCenter));
-            yield return new WaitForSeconds(0.3f);
-
-            // ① 공격 카드 먼저 날리기
-            if (allAttackCards.Count > 0)
-                yield return StartCoroutine(FlyAndHit(allAttackCards, attackTarget));
-
-            // HP 처리 (공격)
-            if (hp != null && turnScore > 0f)
-            {
-                int totalCount = attackCards.Count + criticalCards.Count + chainCards.Count + healCards.Count;
-                float attackRatio = totalCount > 0 ? (float)attackCards.Count / totalCount : 0f;
-                float criticalRatio = totalCount > 0 ? (float)criticalCards.Count / totalCount : 0f;
-                float chainRatio = totalCount > 0 ? (float)chainCards.Count / totalCount : 0f;
-                float healRatio = totalCount > 0 ? (float)healCards.Count / totalCount : 0f;
-
-                float attackScore = turnScore * attackRatio;
-                float criticalScore = turnScore * criticalRatio * 2f; // 크리티컬 2배
-                float totalAttackScore = attackScore + criticalScore;
-                float chainDotScore = turnScore * chainRatio;
-                float healScore = turnScore * healRatio;
-
-                // 피격 연출
-                if (allAttackCards.Count > 0)
-                {
-                    float shakeMult = Mathf.Max(1f, Mathf.Floor(totalAttackScore / 10f));
-                    StartCoroutine(ShakeTransform(shakeTarget, hitShakeDuration, hitShakeIntensity * shakeMult));
-                    yield return StartCoroutine(ShakeCamera(hitShakeDuration, cameraShakeIntensity * shakeMult));
-                }
-
-                if (totalAttackScore > 0f)
-                {
-                    if (_isPlayerTurn)
-                        hp.DamageOpp(totalAttackScore);
-                    else
-                        hp.DamagePlayer(totalAttackScore);
-                }
-
-                // ② 체인 카드 → 상대 슬롯으로 날려서 잠금 + 도트 설정
-                if (chainCards.Count > 0 && slotsToLock.Count > 0)
-                {
-                    if (allAttackCards.Count > 0)
-                        yield return new WaitForSeconds(0.3f);
-                    yield return StartCoroutine(FlyChainCardsAndLock(chainCards, slotsToLock));
-
-                    // 도트 데미지 활성화
-                    if (chainDotScore > 0f)
-                    {
-                        _chainDotTotal = chainDotScore;
-                        _chainDotDealt = 0f;
-                        _chainDotTickTimer = 0f; // 첫 틱 즉시 발동
-                        _chainDotTargetIsOpp = _isPlayerTurn;
-                        Debug.Log($"[Chain DOT] total={chainDotScore:F1} targetIsOpp={_chainDotTargetIsOpp}");
-                    }
-                }
-                else
-                {
-                    foreach (var c in chainCards) Destroy(c);
-                }
-
-                // ③ 힐 카드 마지막
-                if (healCards.Count > 0)
-                {
-                    yield return new WaitForSeconds(0.5f);
-                    yield return StartCoroutine(FlyAndHit(healCards, healTarget));
-                }
-
-                if (healScore > 0f)
-                {
-                    IReadOnlyList<GameObject> healDeckCards = _isPlayerTurn ? deck.SpawnedCards : oppDeck.SpawnedCards;
-                    yield return StartCoroutine(HealGreenWave(healDeckCards, healScore));
-
-                    if (_isPlayerTurn)
-                        hp.HealPlayer(healScore);
-                    else
-                        hp.HealOpp(healScore);
-                }
+                if (isJoker) deck.AddJokerCard(type);
+                else if (value > 0) deck.AddCardByValue(value, type);
             }
             else
             {
-                // 점수 없을 때도 체인 잠금은 처리 (카드 값 합산으로 DOT)
-                if (chainCards.Count > 0 && slotsToLock.Count > 0)
-                {
-                    yield return StartCoroutine(FlyChainCardsAndLock(chainCards, slotsToLock));
-
-                    float chainValSum = 0f;
-                    foreach (var c in chainCards)
-                    {
-                        var cv = c != null ? c.GetComponent<CardValue>() : null;
-                        if (cv != null) chainValSum += cv.value;
-                    }
-                    if (chainValSum > 0f)
-                    {
-                        _chainDotTotal = chainValSum;
-                        _chainDotDealt = 0f;
-                        _chainDotTickTimer = 0f;
-                        _chainDotTargetIsOpp = _isPlayerTurn;
-                    }
-                }
-                else
-                    foreach (var c in chainCards) Destroy(c);
-            }
-
-            // 공격 후: 적 턴 종료 시에만 oppSlots 정리
-            // 체인 잠금 슬롯은 유지
-            if (_isPlayerTurn && oppSlots != null)
-            {
-                foreach (var slot in oppSlots)
-                {
-                    if (slot != null && slot.HasCard && !slot.IsChainLocked)
-                        slot.ClearCard();
-                }
-            }
-
-        }
-
-        // ── 공격 이후 체인 잠금 해제 + 도트 정산 ──
-        Slot[] chainedSlots = _isPlayerTurn ? playerSlots : oppSlots;
-        if (chainedSlots != null)
-        {
-            bool hadChain = false;
-            foreach (var slot in chainedSlots)
-            {
-                if (slot != null && slot.IsChainLocked)
-                {
-                    hadChain = true;
-                    yield return StartCoroutine(slot.UnlockChain());
-                }
-            }
-
-            // 남은 도트 데미지 즉시 정산
-            if (hadChain && _chainDotTotal > _chainDotDealt && hp != null)
-            {
-                float leftover = _chainDotTotal - _chainDotDealt;
-                if (_chainDotTargetIsOpp)
-                    hp.DamageOpp(leftover);
-                else
-                    hp.DamagePlayer(leftover);
-            }
-            _chainDotTotal = 0f;
-            _chainDotDealt = 0f;
-        }
-
-        // EXP는 전환 완료 후에 처리하기 위해 저장
-        bool wasPlayerTurn = _isPlayerTurn;
-        int savedExpAmount = (wasPlayerTurn && exp != null && turnScore > 0f)
-            ? Mathf.RoundToInt(turnScore) : 0;
-
-        // 안전 정리: 슬롯에 남은 앞면 카드 → 덱으로 복귀 (체인 잠금 슬롯 제외)
-        if (slotsToRelease != null)
-        {
-            foreach (var slot in slotsToRelease)
-            {
-                if (slot == null || !slot.HasCard) continue;
-                if (slot.IsChainLocked) continue;
-
-                var cv = slot.GetCardValue();
-                int value = cv != null ? cv.value : 0;
-                bool isJoker = cv != null && cv.isJoker;
-                CardType type = cv != null ? cv.cardType : CardType.Attack;
-
-                slot.ClearCard();
-
-                if (_isPlayerTurn)
-                {
-                    if (isJoker)
-                        deck.AddJokerCard(type);
-                    else if (value > 0)
-                        deck.AddCardByValue(value, type);
-                }
-                else
-                {
-                    if (value > 0)
-                        oppDeck.AddCardByValue(value, type);
-                }
+                if (value > 0) oppDeck.AddCardByValue(value, type);
             }
         }
+    }
 
-        // 턴 전환
-        _isPlayerTurn = !_isPlayerTurn;
-        _timer = turnTime;
-
-        // 상태 플래그 해제 (턴 전환 후, 모든 GameUI)
-        foreach (var gui in FindObjectsOfType<GameUI>())
-        {
-            gui.isScoreOverridden = false;
-        }
-
-        // 턴 전환 직후 드로우: 항상 6개 유지
-        // playerSlots에 남은 카드(상대 턴 중 플레이어가 배치한 카드)도 손패로 간주
+    private void DrawCards()
+    {
         int cardsInPlayerSlots = 0;
         if (playerSlots != null)
             foreach (var s in playerSlots)
@@ -737,65 +647,54 @@ public class MainFlow : MonoBehaviour
         int oppDraw = Mathf.Max(0, 6 - oppDeck.SpawnedCards.Count);
         for (int i = 0; i < oppDraw; i++)
             oppDeck.AddOneCard();
+    }
 
-        UpdateInteraction();
+    private void UpdateInteraction()
+    {
+        if (deck != null) deck.canPlaceInSlot = true;
 
-        // 카드 크기 전환 애니메이션
-        yield return StartCoroutine(AnimateTurnScale());
-
-        // 전환 종료 직전에 오버라이드 해제
-        if (gameUI != null)
-            gameUI.isScoreOverridden = false;
-
-        _isTransitioning = false;
-
-        // ── EXP + 룰렛: 전환 완료 후 실행 (게임이 정상 동작 중인 상태에서) ──
-        if (savedExpAmount > 0)
+        if (endTurnButton != null)
         {
-            System.Func<IEnumerator> levelUpCallback = null;
-            if (roulette != null)
-                levelUpCallback = () => roulette.SpinAndReward();
-
-            yield return StartCoroutine(exp.AddExpAnimated(savedExpAmount, levelUpCallback));
-            Debug.Log($"[MainFlow] EXP +{savedExpAmount} 완료");
+            endTurnButton.gameObject.SetActive(true);
+            endTurnButton.interactable = _isPlayerTurn;
         }
+
+        if (_isPlayerTurn)
+            _reroll.OnNewTurn();
     }
 
     // ─────────────────────────────────────────
-    //  턴 전환 스케일 애니메이션
+    //  덱 스케일 애니메이션
     // ─────────────────────────────────────────
     private IEnumerator AnimateTurnScale()
     {
-        // 활성 턴 → 확대, 비활성 턴 → 축소
-        MonoBehaviour activeDeck = _isPlayerTurn ? (MonoBehaviour)deck : (MonoBehaviour)oppDeck;
+        MonoBehaviour activeDeck   = _isPlayerTurn ? (MonoBehaviour)deck : (MonoBehaviour)oppDeck;
         MonoBehaviour inactiveDeck = _isPlayerTurn ? (MonoBehaviour)oppDeck : (MonoBehaviour)deck;
 
-        Transform activeT = GetDeckTransform(activeDeck);
+        Transform activeT   = GetDeckTransform(activeDeck);
         Transform inactiveT = GetDeckTransform(inactiveDeck);
 
         if (activeT == null && inactiveT == null) yield break;
 
-        Vector3 activeStart = activeT != null ? activeT.localScale : Vector3.one;
+        Vector3 activeStart   = activeT   != null ? activeT.localScale   : Vector3.one;
         Vector3 inactiveStart = inactiveT != null ? inactiveT.localScale : Vector3.one;
-        Vector3 activeTarget = Vector3.one * activeScale;
+        Vector3 activeTarget   = Vector3.one * activeScale;
         Vector3 inactiveTarget = Vector3.one * inactiveScale;
 
         float elapsed = 0f;
         while (elapsed < scaleDuration)
         {
             elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / scaleDuration);
-            float eased = t * t * (3f - 2f * t); // smoothstep
+            float t     = Mathf.Clamp01(elapsed / scaleDuration);
+            float eased = t * t * (3f - 2f * t);
 
-            if (activeT != null)
-                activeT.localScale = Vector3.Lerp(activeStart, activeTarget, eased);
-            if (inactiveT != null)
-                inactiveT.localScale = Vector3.Lerp(inactiveStart, inactiveTarget, eased);
+            if (activeT   != null) activeT.localScale   = Vector3.Lerp(activeStart,   activeTarget,   eased);
+            if (inactiveT != null) inactiveT.localScale = Vector3.Lerp(inactiveStart, inactiveTarget, eased);
 
             yield return null;
         }
 
-        if (activeT != null) activeT.localScale = activeTarget;
+        if (activeT   != null) activeT.localScale   = activeTarget;
         if (inactiveT != null) inactiveT.localScale = inactiveTarget;
     }
 
@@ -812,1114 +711,4 @@ public class MainFlow : MonoBehaviour
         if (deckComp is OppDeck od && od.deckSpawnPoint != null) return od.deckSpawnPoint;
         return deckComp.transform;
     }
-
-    // ─────────────────────────────────────────
-    //  슬롯 카드 평가 (점수 + 콤보 이름)
-    // ─────────────────────────────────────────
-    private float EvaluateSlots(Slot[] slots, out string ruleName)
-    {
-        ruleName = "";
-        if (gameFlow == null || slots == null) return 0f;
-
-        // GameFlow의 GetContributingSlots와 동일하게 조커 최적 해석 사용
-        string comboName;
-        float comboScore;
-        gameFlow.GetBestCombo(slots, out comboName, out comboScore);
-        ruleName = comboName;
-        return comboScore;
-    }
-
-
-
-    // ─────────────────────────────────────────
-    //  상호작용 제어
-    // ─────────────────────────────────────────
-    private void UpdateInteraction()
-    {
-        // 플레이어 턴에만 슬롯 배치 허용
-        if (deck != null)
-            deck.canPlaceInSlot = true;
-
-        if (endTurnButton != null)
-        {
-            endTurnButton.gameObject.SetActive(true);
-            endTurnButton.interactable = _isPlayerTurn;
-        }
-
-        // 슬롯 리롤 횟수 +1 (max 초과 불가)
-        if (_isPlayerTurn)
-        {
-            _slotRerollsRemaining = Mathf.Min(_slotRerollsRemaining + 1, maxSlotRerolls);
-            _slotCardPlacedTime.Clear();
-            UpdateRerollCountUI();
-            ClearRerollOverlay();
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  슬롯 리롤: 호버 감지 + 클릭 처리
-    // ─────────────────────────────────────────
-    private void UpdateSlotReroll()
-    {
-        if (_slotRerollsRemaining <= 0 || playerSlots == null)
-        {
-            ClearRerollOverlay();
-            return;
-        }
-
-        Camera cam = Camera.main;
-        if (cam == null) return;
-
-        // 슬롯 카드 배치 시간 추적
-        foreach (var slot in playerSlots)
-        {
-            if (slot == null) continue;
-            if (slot.HasCard)
-            {
-                if (!_slotCardPlacedTime.ContainsKey(slot))
-                    _slotCardPlacedTime[slot] = Time.time;
-            }
-            else
-            {
-                _slotCardPlacedTime.Remove(slot);
-            }
-        }
-
-        Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
-
-        // 마우스 아래 카드가 있는 플레이어 슬롯 찾기 (배치 후 0.5초 쿨다운)
-        Slot hoveredSlot = null;
-        foreach (var slot in playerSlots)
-        {
-            if (slot == null || !slot.HasCard) continue;
-            if (slot.IsChainLocked) continue; // 체인 잠금 슬롯 리롤 불가
-
-            // 배치 직후 0.5초간 리롤 오버레이 비활성
-            if (_slotCardPlacedTime.TryGetValue(slot, out float placedTime)
-                && Time.time - placedTime < 0.5f)
-                continue;
-
-            var col = slot.GetComponent<Collider2D>();
-            if (col != null && col.OverlapPoint(mouseWorld))
-            {
-                hoveredSlot = slot;
-                break;
-            }
-        }
-
-        // 호버 슬롯이 바뀌면 오버레이 갱신
-        if (hoveredSlot != _hoveredRerollSlot)
-        {
-            ClearRerollOverlay();
-            _hoveredRerollSlot = hoveredSlot;
-
-            if (_hoveredRerollSlot != null && rerollImagePrefab != null)
-            {
-                _rerollOverlay = Instantiate(rerollImagePrefab, _hoveredRerollSlot.transform);
-                _rerollOverlay.transform.localPosition = Vector3.zero;
-                _rerollOverlay.transform.localScale = Vector3.one * 1.5f;
-
-                // 소팅 오더 최상위 + 원형 자르기 (피자 스타일)
-                float ratio = (float)_slotRerollsRemaining / maxSlotRerolls;
-                foreach (var sr in _rerollOverlay.GetComponentsInChildren<SpriteRenderer>())
-                {
-                    sr.sortingOrder = 50;
-
-                    if (sr.sprite != null)
-                    {
-                        Shader radialShader = Shader.Find("Custom/RadialFill");
-                        if (radialShader != null)
-                        {
-                            Material mat = new Material(radialShader);
-                            mat.SetTexture("_MainTex", sr.sprite.texture);
-                            mat.SetFloat("_Fill", ratio);
-
-                            // 아틀라스 대응: 스프라이트 UV rect 전달
-                            Rect texRect = sr.sprite.textureRect;
-                            float texW = sr.sprite.texture.width;
-                            float texH = sr.sprite.texture.height;
-                            mat.SetVector("_SpriteRect", new Vector4(
-                                texRect.x / texW, texRect.y / texH,
-                                texRect.width / texW, texRect.height / texH
-                            ));
-
-                            sr.material = mat;
-                        }
-                    }
-                }
-            }
-        }
-
-        // 클릭 → 리롤 실행
-        if (_hoveredRerollSlot != null && Input.GetMouseButtonDown(0))
-        {
-            Slot rerollSlot = _hoveredRerollSlot;
-            ClearRerollOverlay();
-            StartCoroutine(DoSlotReroll(rerollSlot));
-        }
-    }
-
-    private void ClearRerollOverlay()
-    {
-        if (_rerollOverlay != null)
-        {
-            Destroy(_rerollOverlay);
-            _rerollOverlay = null;
-        }
-
-        _hoveredRerollSlot = null;
-    }
-
-    // ─────────────────────────────────────────
-    //  슬롯 리롤: 카드 교체 애니메이션
-    // ─────────────────────────────────────────
-    private IEnumerator DoSlotReroll(Slot slot)
-    {
-        if (slot == null || !slot.HasCard || deck == null) yield break;
-
-        _isRerolling = true;
-
-        // 리롤 전: 슬롯 이펙트를 분리하여 reelContainer 파괴 시 이펙트가 함께 파괴되는 것 방지
-        if (gameFlow != null && playerSlots != null)
-        {
-            for (int si = 0; si < playerSlots.Length; si++)
-            {
-                if (playerSlots[si] == slot)
-                {
-                    gameFlow.DetachSlotEffect(si);
-                    break;
-                }
-            }
-        }
-
-        var oldCv = slot.GetCardValue();
-        if (oldCv == null) { _isRerolling = false; yield break; }
-
-        CardType type = oldCv.cardType;
-
-        // 최종 결과 카드 미리 결정
-        GameObject finalPrefab;
-        int finalValue;
-        bool finalIsJoker;
-        if (!deck.GetRandomPrefabOfType(type, out finalPrefab, out finalValue, out finalIsJoker))
-        {
-            _isRerolling = false;
-            yield break;
-        }
-
-        var slotCol = slot.GetComponent<Collider2D>();
-        if (slotCol == null) { _isRerolling = false; yield break; }
-
-        Vector2 slotWorldSize = slotCol.bounds.size;
-        Vector3 slotLossyScale = slot.transform.lossyScale;
-
-        // ── SpriteMask 생성 (뷰포트 역할) ──
-        GameObject maskObj = new GameObject("SlotRerollMask");
-        maskObj.transform.SetParent(slot.transform, false);
-        maskObj.transform.localPosition = Vector3.zero;
-
-        SpriteMask mask = maskObj.AddComponent<SpriteMask>();
-        Texture2D maskTex = new Texture2D(4, 4, TextureFormat.RGBA32, false);
-        Color[] pix = new Color[16];
-        for (int p = 0; p < 16; p++) pix[p] = Color.white;
-        maskTex.SetPixels(pix);
-        maskTex.Apply();
-        mask.sprite = Sprite.Create(maskTex, new Rect(0, 0, 4, 4), new Vector2(0.5f, 0.5f), 4f);
-
-        // 마스크를 슬롯 크기에 맞춤
-        maskObj.transform.localScale = new Vector3(
-            slotWorldSize.x / Mathf.Max(Mathf.Abs(slotLossyScale.x), 0.001f),
-            slotWorldSize.y / Mathf.Max(Mathf.Abs(slotLossyScale.y), 0.001f),
-            1f
-        );
-
-        // 슬롯 로컬 스페이스 카드 간격 (= 슬롯 높이)
-        float cardSpacing = slotWorldSize.y / Mathf.Max(Mathf.Abs(slotLossyScale.y), 0.001f);
-
-        // ── 릴 컨테이너 ──
-        GameObject reelContainer = new GameObject("ReelContainer");
-        reelContainer.transform.SetParent(slot.transform, false);
-        reelContainer.transform.localPosition = Vector3.zero;
-
-        // ── 현재 카드를 릴에 편입 ──
-        GameObject currentCard = slot.ReleaseCard();
-        currentCard.transform.SetParent(reelContainer.transform);
-        currentCard.transform.localPosition = Vector3.zero;
-
-        foreach (var sr in currentCard.GetComponentsInChildren<SpriteRenderer>())
-        {
-            sr.maskInteraction = SpriteMaskInteraction.VisibleInsideMask;
-            sr.sortingOrder = 10;
-        }
-
-        List<GameObject> reelCards = new List<GameObject> { currentCard };
-
-        // ── 릴 카드 생성 (위에 쌓기: 위에서 아래로 낙하) ──
-        // 마지막 3장은 최종 결과와 동일 → 감속 구간에서 자연스러운 안착
-        int reelCount = 10;
-        int finalZoneStart = reelCount - 3; // index 7, 8, 9 = 최종 카드
-        int lastPickValue = oldCv.value;
-        for (int i = 1; i < reelCount; i++)
-        {
-            bool isFinalZone = (i >= finalZoneStart);
-            GameObject pickPrefab;
-            int pickValue;
-            bool pickIsJoker;
-
-            if (isFinalZone)
-            {
-                pickPrefab = finalPrefab;
-                pickValue = finalValue;
-                pickIsJoker = finalIsJoker;
-            }
-            else
-            {
-                // 이전 카드 및 최종 카드와 다른 카드가 나올 때까지 재시도
-                int attempts = 0;
-                do
-                {
-                    if (!deck.GetRandomPrefabOfType(type, out pickPrefab, out pickValue, out pickIsJoker))
-                    {
-                        pickPrefab = finalPrefab;
-                        pickValue = finalValue;
-                        pickIsJoker = finalIsJoker;
-                        break;
-                    }
-                    attempts++;
-                } while ((pickValue == lastPickValue || pickValue == finalValue) && attempts < 20);
-            }
-            lastPickValue = pickValue;
-
-            GameObject reelCard = Instantiate(pickPrefab, reelContainer.transform);
-            var cv = reelCard.GetComponent<CardValue>();
-            if (cv == null) cv = reelCard.AddComponent<CardValue>();
-            cv.value = pickValue;
-            cv.isJoker = pickIsJoker;
-            cv.cardType = type;
-
-            // 슬롯에 맞게 크기 조정
-            RerollFitCard(reelCard, slotCol);
-
-            // 위에 배치
-            reelCard.transform.localPosition = new Vector3(0f, cardSpacing * i, 0f);
-
-            // 마스크 인터랙션 + 소팅
-            foreach (var sr in reelCard.GetComponentsInChildren<SpriteRenderer>())
-            {
-                sr.maskInteraction = SpriteMaskInteraction.VisibleInsideMask;
-                sr.sortingOrder = 10;
-            }
-
-            // 콜라이더 비활성화
-            foreach (var c in reelCard.GetComponentsInChildren<Collider2D>())
-                c.enabled = false;
-
-            reelCards.Add(reelCard);
-        }
-
-        // ── 릴 전체를 아래로 슬라이드 (슬롯머신 낙하) ──
-        float totalDist = cardSpacing * (reelCount - 1);
-        float duration = 1.2f;
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-            // ease-out cubic: 처음 빠르고 끝에서 느려짐
-            float eased = 1f - (1f - t) * (1f - t) * (1f - t);
-            reelContainer.transform.localPosition = new Vector3(0f, -totalDist * eased, 0f);
-            yield return null;
-        }
-        reelContainer.transform.localPosition = new Vector3(0f, -totalDist, 0f);
-
-        // ── 정리: 최종 카드만 남기고 나머지 제거 ──
-        GameObject finalCard = reelCards[reelCards.Count - 1];
-
-        // 마스크 인터랙션 복원
-        foreach (var sr in finalCard.GetComponentsInChildren<SpriteRenderer>())
-            sr.maskInteraction = SpriteMaskInteraction.None;
-
-        // 최종 카드를 슬롯에 배치 (RerollFitCard로 이미 스케일 적용됐으므로 Raw 사용)
-        finalCard.transform.SetParent(null);
-        slot.PlaceCardRaw(finalCard);
-
-        // 나머지 정리
-        Destroy(reelContainer);
-        Destroy(maskObj);
-        if (maskTex != null) Destroy(maskTex);
-
-        // ── 리롤 횟수 차감 ──
-        _slotRerollsRemaining--;
-        UpdateRerollCountUI();
-        _isRerolling = false;
-    }
-
-    private void RerollFitCard(GameObject card, Collider2D slotCol)
-    {
-        Vector2 slotSize = slotCol.bounds.size;
-        var renderer = card.GetComponentInChildren<Renderer>();
-        if (renderer == null) return;
-        Vector3 cardSize = renderer.bounds.size;
-        if (cardSize.x < 0.001f || cardSize.y < 0.001f) return;
-        float scale = Mathf.Min(slotSize.x / cardSize.x, slotSize.y / cardSize.y);
-        card.transform.localScale *= scale;
-    }
-
-    private void UpdateRerollCountUI()
-    {
-        // 리롤 잔량은 오버레이 이미지 자르기로 표시 (UpdateSlotReroll에서 처리)
-    }
-
-    // ─────────────────────────────────────────
-    //  쇼케이스: 중간 지점에 카드 나열 애니메이션
-    // ─────────────────────────────────────────
-    private IEnumerator ArrangeAtShowcase(List<GameObject> cards, Vector3 center)
-    {
-        int count = cards.Count;
-
-        // 목표 위치: 중앙 기준 균등 배치
-        Vector3[] targets = new Vector3[count];
-        for (int i = 0; i < count; i++)
-        {
-            float offset = (i - (count - 1) * 0.5f) * showcaseSpacing;
-            targets[i] = new Vector3(center.x + offset, center.y, 0f);
-        }
-
-        // 시작 상태 저장
-        Vector3[] startPositions = new Vector3[count];
-        Quaternion[] startRotations = new Quaternion[count];
-        for (int i = 0; i < count; i++)
-        {
-            startPositions[i] = cards[i].transform.position;
-            startRotations[i] = cards[i].transform.rotation;
-        }
-
-        float elapsed = 0f;
-        while (elapsed < showcaseMoveDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / showcaseMoveDuration);
-            float eased = t * t * (3f - 2f * t); // smoothstep
-
-            for (int i = 0; i < count; i++)
-            {
-                if (cards[i] == null) continue;
-                cards[i].transform.position = Vector3.Lerp(startPositions[i], targets[i], eased);
-                cards[i].transform.rotation = Quaternion.Slerp(startRotations[i], Quaternion.identity, eased);
-            }
-
-            yield return null;
-        }
-
-        // 최종 위치 보정
-        for (int i = 0; i < count; i++)
-        {
-            if (cards[i] == null) continue;
-            cards[i].transform.position = targets[i];
-            cards[i].transform.rotation = Quaternion.identity;
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  카드를 중앙 한 점으로 모으기
-    // ─────────────────────────────────────────
-    private IEnumerator GatherToPoint(List<GameObject> cards, Vector3 point)
-    {
-        int count = cards.Count;
-        Vector3[] startPositions = new Vector3[count];
-        for (int i = 0; i < count; i++)
-            startPositions[i] = cards[i] != null ? cards[i].transform.position : point;
-
-        float elapsed = 0f;
-        while (elapsed < showcaseMoveDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / showcaseMoveDuration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < count; i++)
-            {
-                if (cards[i] == null) continue;
-                cards[i].transform.position = Vector3.Lerp(startPositions[i], point, eased);
-            }
-            yield return null;
-        }
-
-        for (int i = 0; i < count; i++)
-        {
-            if (cards[i] != null)
-                cards[i].transform.position = point;
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  쇼케이스: 두 줄 (위: 공격, 아래: 방어)
-    // ─────────────────────────────────────────
-    private IEnumerator ArrangeAtShowcaseTwoRows(
-        List<GameObject> topCards, List<GameObject> bottomCards,
-        Vector3 center, float rowOffset)
-    {
-        int topCount = topCards.Count;
-        int bottomCount = bottomCards.Count;
-        int totalCount = topCount + bottomCount;
-
-        Vector3 topCenter = center + new Vector3(0f, rowOffset, 0f);
-        Vector3 bottomCenter = center - new Vector3(0f, rowOffset, 0f);
-
-        // 목표 위치 계산
-        Vector3[] topTargets = new Vector3[topCount];
-        for (int i = 0; i < topCount; i++)
-        {
-            float offset = (i - (topCount - 1) * 0.5f) * showcaseSpacing;
-            topTargets[i] = new Vector3(topCenter.x + offset, topCenter.y, 0f);
-        }
-
-        Vector3[] bottomTargets = new Vector3[bottomCount];
-        for (int i = 0; i < bottomCount; i++)
-        {
-            float offset = (i - (bottomCount - 1) * 0.5f) * showcaseSpacing;
-            bottomTargets[i] = new Vector3(bottomCenter.x + offset, bottomCenter.y, 0f);
-        }
-
-        // 시작 상태 저장
-        Vector3[] topStarts = new Vector3[topCount];
-        Quaternion[] topStartRots = new Quaternion[topCount];
-        for (int i = 0; i < topCount; i++)
-        {
-            topStarts[i] = topCards[i].transform.position;
-            topStartRots[i] = topCards[i].transform.rotation;
-        }
-
-        Vector3[] bottomStarts = new Vector3[bottomCount];
-        Quaternion[] bottomStartRots = new Quaternion[bottomCount];
-        for (int i = 0; i < bottomCount; i++)
-        {
-            bottomStarts[i] = bottomCards[i].transform.position;
-            bottomStartRots[i] = bottomCards[i].transform.rotation;
-        }
-
-        float elapsed = 0f;
-        while (elapsed < showcaseMoveDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / showcaseMoveDuration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < topCount; i++)
-            {
-                if (topCards[i] == null) continue;
-                topCards[i].transform.position = Vector3.Lerp(topStarts[i], topTargets[i], eased);
-                topCards[i].transform.rotation = Quaternion.Slerp(topStartRots[i], Quaternion.identity, eased);
-            }
-
-            for (int i = 0; i < bottomCount; i++)
-            {
-                if (bottomCards[i] == null) continue;
-                bottomCards[i].transform.position = Vector3.Lerp(bottomStarts[i], bottomTargets[i], eased);
-                bottomCards[i].transform.rotation = Quaternion.Slerp(bottomStartRots[i], Quaternion.identity, eased);
-            }
-
-            yield return null;
-        }
-
-        // 최종 위치 보정
-        for (int i = 0; i < topCount; i++)
-        {
-            if (topCards[i] == null) continue;
-            topCards[i].transform.position = topTargets[i];
-            topCards[i].transform.rotation = Quaternion.identity;
-        }
-        for (int i = 0; i < bottomCount; i++)
-        {
-            if (bottomCards[i] == null) continue;
-            bottomCards[i].transform.position = bottomTargets[i];
-            bottomCards[i].transform.rotation = Quaternion.identity;
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  쇼케이스 정렬 (범용)
-    // ─────────────────────────────────────────
-    private IEnumerator SortShowcaseBy(List<GameObject> cards, Vector3 center,
-        System.Comparison<GameObject> comparison)
-    {
-        int count = cards.Count;
-
-        int[] indices = new int[count];
-        for (int i = 0; i < count; i++) indices[i] = i;
-        System.Array.Sort(indices, (a, b) => comparison(cards[a], cards[b]));
-
-        Vector3[] sortedTargets = new Vector3[count];
-        for (int i = 0; i < count; i++)
-        {
-            float offset = (i - (count - 1) * 0.5f) * showcaseSpacing;
-            sortedTargets[i] = new Vector3(center.x + offset, center.y, 0f);
-        }
-
-        Vector3[] startPositions = new Vector3[count];
-        for (int i = 0; i < count; i++)
-        {
-            if (cards[indices[i]] != null)
-                startPositions[i] = cards[indices[i]].transform.position;
-        }
-
-        float elapsed = 0f;
-        while (elapsed < showcaseSortDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / showcaseSortDuration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < count; i++)
-            {
-                if (cards[indices[i]] == null) continue;
-                cards[indices[i]].transform.position = Vector3.Lerp(startPositions[i], sortedTargets[i], eased);
-            }
-
-            yield return null;
-        }
-
-        for (int i = 0; i < count; i++)
-        {
-            if (cards[indices[i]] == null) continue;
-            cards[indices[i]].transform.position = sortedTargets[i];
-            foreach (var r in cards[indices[i]].GetComponentsInChildren<Renderer>())
-                r.sortingOrder = 500 + i;
-        }
-    }
-
-    // ── 정렬 비교 함수: 타입별 (Attack → Critical → Heal) ──
-    private static int SortByType(GameObject a, GameObject b)
-    {
-        var cva = a != null ? a.GetComponent<CardValue>() : null;
-        var cvb = b != null ? b.GetComponent<CardValue>() : null;
-        int ta = cva != null ? (int)cva.cardType : 0;
-        int tb = cvb != null ? (int)cvb.cardType : 0;
-        return ta.CompareTo(tb);
-    }
-
-    // ── 정렬 비교 함수: 숫자별 (타입 무관) ──
-    private static int SortByTypeAndValue(GameObject a, GameObject b)
-    {
-        var cva = a != null ? a.GetComponent<CardValue>() : null;
-        var cvb = b != null ? b.GetComponent<CardValue>() : null;
-        int va = cva != null ? cva.value : 0;
-        int vb = cvb != null ? cvb.value : 0;
-        return va.CompareTo(vb);
-    }
-
-    // ─────────────────────────────────────────
-    //  카드 날리기: 회전 → 발사 + 타격 연출
-    // ─────────────────────────────────────────
-    private IEnumerator FlyAndHit(List<GameObject> cards, Vector3 targetWorld)
-    {
-        // 1) 상대 방향으로 회전 (0.3초)
-        float rotateDuration = 0.3f;
-        Quaternion[] startRotations = new Quaternion[cards.Count];
-        Quaternion[] targetRotations = new Quaternion[cards.Count];
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] == null) continue;
-            startRotations[i] = cards[i].transform.rotation;
-
-            // 180도 회전
-            targetRotations[i] = startRotations[i] * Quaternion.Euler(0f, 0f, 45f);
-        }
-
-        float elapsed = 0f;
-        while (elapsed < rotateDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / rotateDuration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < cards.Count; i++)
-            {
-                if (cards[i] == null) continue;
-                cards[i].transform.rotation = Quaternion.Slerp(startRotations[i], targetRotations[i], eased);
-            }
-
-            yield return null;
-        }
-
-        // 2) 순차적으로 발사
-        List<Coroutine> flights = new List<Coroutine>();
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] == null) continue;
-            flights.Add(StartCoroutine(FlyOneCard(cards[i], targetWorld)));
-            if (i < cards.Count - 1)
-                yield return new WaitForSeconds(attackStagger);
-        }
-
-        // 마지막 카드 도착 대기
-        if (flights.Count > 0)
-            yield return flights[flights.Count - 1];
-    }
-
-    private IEnumerator FlyOneCard(GameObject card, Vector3 targetWorld)
-    {
-        Vector3 startPos = card.transform.position;
-        Vector3 startScale = card.transform.localScale;
-        Quaternion startRot = card.transform.rotation;
-
-        // 모든 SpriteRenderer 수집
-        var renderers = card.GetComponentsInChildren<SpriteRenderer>();
-        Color[] startColors = new Color[renderers.Length];
-        for (int i = 0; i < renderers.Length; i++)
-            startColors[i] = renderers[i].color;
-
-        float elapsed = 0f;
-
-        while (elapsed < attackDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / attackDuration);
-
-            // ease-in (가속)
-            float eased = t * t;
-
-            card.transform.position = Vector3.Lerp(startPos, targetWorld, eased);
-            card.transform.rotation = startRot; // 회전 유지
-            card.transform.localScale = Vector3.Lerp(startScale, startScale * 0.3f, eased);
-
-            // 페이드 아웃: 후반부(40%~100%)에서 자연스럽게
-            float fadeT = Mathf.Clamp01((t - 0.4f) / 0.6f);
-            float alpha = 1f - fadeT;
-            for (int i = 0; i < renderers.Length; i++)
-            {
-                Color c = startColors[i];
-                c.a = startColors[i].a * alpha;
-                renderers[i].color = c;
-            }
-
-            yield return null;
-        }
-
-        Destroy(card);
-    }
-
-    // ─────────────────────────────────────────
-    //  힐 연출: 위→아래 초록빛 웨이브
-    // ─────────────────────────────────────────
-    private IEnumerator HealGreenWave(IReadOnlyList<GameObject> cards, float healAmount)
-    {
-        if (cards == null || cards.Count == 0) yield break;
-
-        float intensity = Mathf.Clamp01(healAmount / 30f); // 힐량 비례 (30이면 최대)
-        Color greenTint = new Color(0f, 1f, 0.3f, intensity * 0.7f);
-        float duration = 0.4f + intensity * 0.3f; // 0.4~0.7초
-
-        // 각 카드의 SpriteRenderer와 원래 색상 저장
-        var renderers = new List<List<SpriteRenderer>>();
-        var originalColors = new List<List<Color>>();
-        var cardBounds = new List<float>(); // 각 카드의 상단 y (로컬)
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] == null) { renderers.Add(null); originalColors.Add(null); cardBounds.Add(0f); continue; }
-            var srs = new List<SpriteRenderer>(cards[i].GetComponentsInChildren<SpriteRenderer>());
-            var cols = new List<Color>();
-            foreach (var sr in srs) cols.Add(sr.color);
-            renderers.Add(srs);
-            originalColors.Add(cols);
-
-            var mainSr = cards[i].GetComponentInChildren<SpriteRenderer>();
-            cardBounds.Add(mainSr != null && mainSr.sprite != null
-                ? mainSr.sprite.bounds.extents.y * mainSr.transform.lossyScale.y
-                : 0.5f);
-        }
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float progress = Mathf.Clamp01(elapsed / duration); // 0→1 (위→아래)
-
-            for (int i = 0; i < cards.Count; i++)
-            {
-                if (renderers[i] == null) continue;
-                for (int j = 0; j < renderers[i].Count; j++)
-                {
-                    if (renderers[i][j] == null) continue;
-
-                    // 스프라이트 로컬 y 기준으로 위→아래 sweep
-                    float spriteY = renderers[i][j].transform.localPosition.y;
-                    float normalizedY = Mathf.Clamp01((cardBounds[i] - spriteY) / (cardBounds[i] * 2f));
-                    float wave = Mathf.Clamp01(1f - Mathf.Abs(progress - normalizedY) * 4f);
-
-                    Color c = originalColors[i][j];
-                    renderers[i][j].color = Color.Lerp(c, new Color(c.r * 0.5f, 1f, c.g * 0.5f + 0.3f, c.a), wave * intensity);
-                }
-            }
-            yield return null;
-        }
-
-        // 원래 색상 복원
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (renderers[i] == null) continue;
-            for (int j = 0; j < renderers[i].Count; j++)
-            {
-                if (renderers[i][j] != null)
-                    renderers[i][j].color = originalColors[i][j];
-            }
-        }
-    }
-
-
-
-
-
-    // ─────────────────────────────────────────
-    //  체인 카드 → 상대 슬롯 날리기 + 잠금
-    //  모든 체인 카드 동시에 날아가며 페이드아웃,
-    //  도착 시 체인 프리팹 페이드인
-    // ─────────────────────────────────────────
-    private IEnumerator FlyChainCardsAndLock(List<GameObject> chainCards, List<Slot> slotsToLock)
-    {
-        if (chainCards.Count == 0 || slotsToLock.Count == 0) yield break;
-
-        // 모든 체인 카드를 동시에 각 슬롯으로 날리기 (크기 고정)
-        for (int i = 0; i < chainCards.Count; i++)
-        {
-            Slot targetSlot = slotsToLock[i % slotsToLock.Count];
-            StartCoroutine(FlyOneChainCard(chainCards[i], targetSlot));
-        }
-
-        // 이동 완료 대기 + 슬롯 위에서 0.5초 보여주기
-        yield return new WaitForSeconds(attackDuration + 0.5f);
-
-        // 체인 카드 페이드아웃 + 체인 오버레이 페이드인 동시 진행
-        float fadeDuration = 0.4f;
-
-        // 체인 카드 페이드아웃 시작
-        List<Coroutine> fadeOuts = new List<Coroutine>();
-        foreach (var card in chainCards)
-        {
-            if (card != null)
-                fadeOuts.Add(StartCoroutine(FadeOutAndDestroy(card, fadeDuration)));
-        }
-
-        // 동시에 체인 오버레이 생성 + 페이드인
-        foreach (var slot in slotsToLock)
-        {
-            slot.ChainLock(chainLockPrefab);
-            StartCoroutine(slot.FadeInChain(fadeDuration));
-        }
-
-        yield return new WaitForSeconds(fadeDuration);
-    }
-
-    private IEnumerator FlyOneChainCard(GameObject card, Slot targetSlot)
-    {
-        if (card == null || targetSlot == null) yield break;
-
-        card.transform.SetParent(null);
-        Vector3 start = card.transform.position;
-        Vector3 end = targetSlot.transform.position;
-        float duration = attackDuration;
-        float elapsed = 0f;
-
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-            float ease = t * t;
-            card.transform.position = Vector3.Lerp(start, end, ease);
-            yield return null;
-        }
-
-        // 슬롯 위에 정확히 맞춤
-        card.transform.position = end;
-    }
-
-    private IEnumerator FadeOutAndDestroy(GameObject obj, float duration)
-    {
-        if (obj == null) yield break;
-        var renderers = obj.GetComponentsInChildren<SpriteRenderer>();
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float a = 1f - Mathf.Clamp01(elapsed / duration);
-            foreach (var sr in renderers)
-            {
-                Color c = sr.color;
-                c.a = a;
-                sr.color = c;
-            }
-            yield return null;
-        }
-        Destroy(obj);
-    }
-
-    // ─────────────────────────────────────────
-    //  피격 연출: 덱 흔들림
-    // ─────────────────────────────────────────
-    private IEnumerator ShakeTransform(Transform target, float duration, float intensity)
-    {
-        Vector3 originalPos = target.localPosition;
-        
-        // 덱 이미지 스프라이트 찾아서 빨갛게 번쩍이는 효과 추가
-        SpriteRenderer sr = target.GetComponentInChildren<SpriteRenderer>();
-        Color originalColor = sr != null ? sr.color : Color.white;
-        Color redTint = new Color(1f, 0.3f, 0.3f, 1f);
-
-        float elapsed = 0f;
-
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = 1f - (elapsed / duration); // 감쇠
-            float offsetX = Random.Range(-1f, 1f) * intensity * t;
-            float offsetY = Random.Range(-1f, 1f) * intensity * t;
-            target.localPosition = originalPos + new Vector3(offsetX, offsetY, 0f);
-
-            if (sr != null)
-            {
-                // 매우 빠르게 빨간색 <-> 원래색 번쩍임
-                float flash = Mathf.PingPong(elapsed * 15f, 1f) * t; 
-                sr.color = Color.Lerp(originalColor, redTint, flash);
-            }
-
-            yield return null;
-        }
-
-        target.localPosition = originalPos;
-        if (sr != null) sr.color = originalColor;
-    }
-
-    // ─────────────────────────────────────────
-    //  피격 연출: 카메라 흔들림
-    // ─────────────────────────────────────────
-    private IEnumerator ShakeCamera(float duration, float intensity)
-    {
-        Camera cam = Camera.main;
-        if (cam == null) yield break;
-
-        Vector3 originalPos = cam.transform.localPosition;
-        float elapsed = 0f;
-
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = 1f - (elapsed / duration); // 감쇠
-            float offsetX = Random.Range(-1f, 1f) * intensity * t;
-            float offsetY = Random.Range(-1f, 1f) * intensity * t;
-            cam.transform.localPosition = originalPos + new Vector3(offsetX, offsetY, 0f);
-            yield return null;
-        }
-
-        cam.transform.localPosition = originalPos;
-    }
-
-    // ─────────────────────────────────────────
-    //  카드 그룹을 목표 위치로 이동 (파괴 없음)
-    // ─────────────────────────────────────────
-    private IEnumerator FlyCardsTo(List<GameObject> cards, Vector3 targetPos, float duration = 0.4f)
-    {
-        Vector3[] startPositions = new Vector3[cards.Count];
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] != null)
-                startPositions[i] = cards[i].transform.position;
-        }
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < cards.Count; i++)
-            {
-                if (cards[i] == null) continue;
-                cards[i].transform.position = Vector3.Lerp(startPositions[i], targetPos, eased);
-            }
-            yield return null;
-        }
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] != null)
-                cards[i].transform.position = targetPos;
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  카드들을 각각의 목표 위치로 퍼뜨리며 이동
-    // ─────────────────────────────────────────
-    private IEnumerator SpreadToTargets(List<GameObject> cards, List<Vector3> targets, float duration = 0.3f)
-    {
-        if (targets.Count == 0) yield break;
-
-        Vector3[] startPositions = new Vector3[cards.Count];
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] != null)
-                startPositions[i] = cards[i].transform.position;
-        }
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < cards.Count; i++)
-            {
-                if (cards[i] == null) continue;
-                Vector3 dest = targets[i % targets.Count];
-                cards[i].transform.position = Vector3.Lerp(startPositions[i], dest, eased);
-            }
-            yield return null;
-        }
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] != null)
-                cards[i].transform.position = targets[i % targets.Count];
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  동점 무효화: 전체 카드 서서히 페이드 아웃 + 파괴
-    // ─────────────────────────────────────────
-    // ─────────────────────────────────────────
-    //  승패 시각화: 이긴 카드 확대, 진 카드 축소
-    // ─────────────────────────────────────────
-    private IEnumerator ScaleCards(List<GameObject> winCards, float winScale,
-        List<GameObject> loseCards, float loseScale, float duration)
-    {
-        Vector3[] winStarts = new Vector3[winCards.Count];
-        Vector3[] loseStarts = new Vector3[loseCards.Count];
-
-        for (int i = 0; i < winCards.Count; i++)
-        {
-            if (winCards[i] != null) winStarts[i] = winCards[i].transform.localScale;
-        }
-        for (int i = 0; i < loseCards.Count; i++)
-        {
-            if (loseCards[i] != null) loseStarts[i] = loseCards[i].transform.localScale;
-        }
-
-        // 진 쪽 카드 원래 색 저장
-        SpriteRenderer[][] loseRenderers = new SpriteRenderer[loseCards.Count][];
-        Color[][] loseOrigColors = new Color[loseCards.Count][];
-        for (int i = 0; i < loseCards.Count; i++)
-        {
-            if (loseCards[i] == null) continue;
-            loseRenderers[i] = loseCards[i].GetComponentsInChildren<SpriteRenderer>();
-            loseOrigColors[i] = new Color[loseRenderers[i].Length];
-            for (int j = 0; j < loseRenderers[i].Length; j++)
-                loseOrigColors[i][j] = loseRenderers[i][j].color;
-        }
-
-        Color redTint = new Color(1f, 0.3f, 0.3f, 1f);
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-            float eased = t * t * (3f - 2f * t);
-
-            for (int i = 0; i < winCards.Count; i++)
-            {
-                if (winCards[i] == null) continue;
-                winCards[i].transform.localScale = winStarts[i] * Mathf.Lerp(1f, winScale, eased);
-            }
-            for (int i = 0; i < loseCards.Count; i++)
-            {
-                if (loseCards[i] == null) continue;
-                loseCards[i].transform.localScale = loseStarts[i] * Mathf.Lerp(1f, loseScale, eased);
-
-                // 진 쪽 빨간색 그라데이션
-                if (loseRenderers[i] != null)
-                {
-                    for (int j = 0; j < loseRenderers[i].Length; j++)
-                    {
-                        if (loseRenderers[i][j] == null) continue;
-                        loseRenderers[i][j].color = Color.Lerp(loseOrigColors[i][j], redTint, eased);
-                    }
-                }
-            }
-            yield return null;
-        }
-
-        // 최종값 보정 (색상은 유지 — 이후 uniformCardScale 복원 시 색도 복원)
-        for (int i = 0; i < winCards.Count; i++)
-        {
-            if (winCards[i] != null)
-                winCards[i].transform.localScale = winStarts[i] * winScale;
-        }
-        for (int i = 0; i < loseCards.Count; i++)
-        {
-            if (loseCards[i] == null) continue;
-            loseCards[i].transform.localScale = loseStarts[i] * loseScale;
-            if (loseRenderers[i] != null)
-                for (int j = 0; j < loseRenderers[i].Length; j++)
-                    if (loseRenderers[i][j] != null)
-                        loseRenderers[i][j].color = redTint;
-        }
-    }
-
-    private IEnumerator FadeOutAndDestroy(List<GameObject> cards, float duration)
-    {
-        // 원래 스케일·색상 저장
-        Vector3[] origScales = new Vector3[cards.Count];
-        var renderersList = new List<SpriteRenderer[]>();
-        var originalColors = new List<Color[]>();
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] == null) { renderersList.Add(null); originalColors.Add(null); continue; }
-            origScales[i] = cards[i].transform.localScale;
-            var srs = cards[i].GetComponentsInChildren<SpriteRenderer>();
-            renderersList.Add(srs);
-            var cols = new Color[srs.Length];
-            for (int j = 0; j < srs.Length; j++) cols[j] = srs[j].color;
-            originalColors.Add(cols);
-        }
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / duration);
-
-            for (int i = 0; i < cards.Count; i++)
-            {
-                if (cards[i] == null) continue;
-
-                // 축소
-                cards[i].transform.localScale = origScales[i] * (1f - t * 0.5f);
-
-                // 페이드 아웃
-                if (renderersList[i] == null) continue;
-                for (int j = 0; j < renderersList[i].Length; j++)
-                {
-                    if (renderersList[i][j] == null) continue;
-                    Color c = originalColors[i][j];
-                    c.a = originalColors[i][j].a * (1f - t);
-                    renderersList[i][j].color = c;
-                }
-            }
-            yield return null;
-        }
-
-        // 파괴
-        for (int i = 0; i < cards.Count; i++)
-        {
-            if (cards[i] != null)
-                Destroy(cards[i]);
-        }
-    }
-
-    // 방어 관련 코루틴 삭제됨
 }

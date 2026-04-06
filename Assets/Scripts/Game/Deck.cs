@@ -120,7 +120,7 @@ public class Deck : MonoBehaviour
             {
                 Slot slot = canPlaceInSlot ? FindSlotAtPosition(mouseWorld) : null;
 
-                if (slot != null && !slot.HasCard)
+                if (slot != null && !slot.HasCard && !slot.IsChainLocked)
                 {
                     var cv = _draggingCard.GetComponent<CardValue>();
                     GameObject cardObj = _draggingCard.gameObject;

@@ -48,7 +48,7 @@ public class OnlineOpponent : MonoBehaviour
     {
         if (OppSlots == null || slotIndex < 0 || slotIndex >= OppSlots.Length) return;
         var slot = OppSlots[slotIndex];
-        if (slot == null || slot.HasCard) return;
+        if (slot == null || slot.HasCard || slot.IsChainLocked) return;
 
         var card = SpawnCard(value, type, isJoker, faceDown: true);
         if (card != null)

@@ -54,6 +54,10 @@ public class Slot : MonoBehaviour
 
     public void PlaceCard(GameObject card)
     {
+        // 기존 카드가 있으면 파괴 (AnimatePlace 경합으로 인한 잔류 방지)
+        if (_placedCard != null && _placedCard != card)
+            Destroy(_placedCard);
+
         _placedCard = card;
 
         var cv = card.GetComponent<CardValue>();
@@ -109,6 +113,10 @@ public class Slot : MonoBehaviour
     /// </summary>
     public void PlaceCardRaw(GameObject card)
     {
+        // 기존 카드가 있으면 파괴 (잔류 방지)
+        if (_placedCard != null && _placedCard != card)
+            Destroy(_placedCard);
+
         _placedCard = card;
 
         var cv = card.GetComponent<CardValue>();

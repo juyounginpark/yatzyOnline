@@ -107,7 +107,8 @@ public class GameFlow : MonoBehaviour
 
         for (int i = 0; i < slotCount; i++)
         {
-            if (slots[i] != null && slots[i].HasVisibleCard)
+            if (slots[i] != null && slots[i].HasVisibleCard
+                && !slots[i].IsChainLocked)
             {
                 var cv = slots[i].GetCardValue();
                 if (cv != null)
@@ -269,7 +270,8 @@ public class GameFlow : MonoBehaviour
         bool[] jokerFlags = new bool[targetSlots.Length];
         for (int i = 0; i < targetSlots.Length; i++)
         {
-            if (targetSlots[i] != null && targetSlots[i].HasVisibleCard)
+            if (targetSlots[i] != null && targetSlots[i].HasVisibleCard
+                && !targetSlots[i].IsChainLocked)
             {
                 var cv = targetSlots[i].GetCardValue();
                 if (cv != null)
@@ -298,7 +300,8 @@ public class GameFlow : MonoBehaviour
         bool[] jokerFlags = new bool[slots.Length];
         for (int i = 0; i < slots.Length; i++)
         {
-            if (slots[i] != null && slots[i].HasVisibleCard)
+            if (slots[i] != null && slots[i].HasVisibleCard
+                && !slots[i].IsChainLocked)
             {
                 var cv = slots[i].GetCardValue();
                 if (cv != null)

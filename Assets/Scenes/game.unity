@@ -507,10 +507,10 @@ MonoBehaviour:
   showcaseSpacing: 1.15
   attackDuration: 0.4
   attackStagger: 0.06
-  hitShakeDuration: 0.5
-  hitShakeIntensity: 0.3
-  cameraShakeIntensity: 0.08
-  isOnlineMode: 0
+  hitShakeDuration: 0.2
+  hitShakeIntensity: 0.1
+  cameraShakeIntensity: 0.1
+  isOnlineMode: 1
   onlineOpponent: {fileID: 0}
   chainLockPrefab: {fileID: 8002144047082630695, guid: c04d85f42d70de84c87950486bb0e3cc, type: 3}
   activeScale: 1

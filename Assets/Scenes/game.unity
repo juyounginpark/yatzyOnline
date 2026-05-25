@@ -337,7 +337,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::Deck
   deckGroups:
-  - isActive: 0
+  - isActive: 1
     groupName: Normal
     groupType: 0
     cards:
@@ -391,7 +391,7 @@ MonoBehaviour:
       prefab: {fileID: 8002144047082630695, guid: 1837d2a79dc066f419af1a12d970699d, type: 3}
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 813d0b84fa870044c967ecfda8d0c3de, type: 3}
-  - isActive: 1
+  - isActive: 0
     groupName: Chain
     groupType: 3
     cards:
@@ -510,7 +510,7 @@ MonoBehaviour:
   hitShakeDuration: 0.2
   hitShakeIntensity: 0.1
   cameraShakeIntensity: 0.1
-  isOnlineMode: 1
+  isOnlineMode: 0
   onlineOpponent: {fileID: 0}
   chainLockPrefab: {fileID: 8002144047082630695, guid: c04d85f42d70de84c87950486bb0e3cc, type: 3}
   activeScale: 1

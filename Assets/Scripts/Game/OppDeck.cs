@@ -240,11 +240,23 @@ public class OppDeck : MonoBehaviour
 
     // ─────────────────────────────────────────
     //  덱 그룹에서 랜덤 타입 선택
+    //  플레이어 덱의 활성화된 그룹과 동기화 (AI 모드)
     // ─────────────────────────────────────────
     private CardType GetRandomType()
     {
         if (deck == null || deck.deckGroups == null || deck.deckGroups.Length == 0)
             return CardType.Attack;
-        return deck.deckGroups[Random.Range(0, deck.deckGroups.Length)].groupType;
+
+        var activeTypes = new List<CardType>();
+        foreach (var group in deck.deckGroups)
+        {
+            if (group != null && group.isActive)
+                activeTypes.Add(group.groupType);
+        }
+
+        if (activeTypes.Count == 0)
+            return CardType.Attack;
+
+        return activeTypes[Random.Range(0, activeTypes.Count)];
     }
 }

@@ -15,12 +15,6 @@ public class Slot : MonoBehaviour
 
     public bool allowReturn = true;
 
-    // ─── 체인 잠금 ───
-    private bool _isChainLocked;
-    private GameObject _chainOverlay;
-
-    public bool IsChainLocked => _isChainLocked;
-
     public bool HasCard => _placedCard != null;
     public bool HasVisibleCard => _placedCard != null;
 
@@ -42,9 +36,8 @@ public class Slot : MonoBehaviour
         if (col == null || !col.OverlapPoint(mouseWorld)) return;
 
         // 우클릭: 덱으로 반환 (애니메이션)
-        // 체인 잠금 중에는 반환 불가
         // _lastReturnFrame 체크로 같은 프레임에 여러 슬롯이 동시에 처리되는 것 방지
-        if (allowReturn && !_isChainLocked && Input.GetMouseButtonDown(1) && !_isFlipping
+        if (allowReturn && Input.GetMouseButtonDown(1) && !_isFlipping
             && _lastReturnFrame != Time.frameCount)
         {
             _lastReturnFrame = Time.frameCount;
@@ -191,18 +184,6 @@ public class Slot : MonoBehaviour
             deck.AddJokerCard(type);
         else
             deck.AddCardByValue(value, type);
-
-        // 온라인: 상대에게 카드 반환 알림
-        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
-        {
-            var mf = FindObjectOfType<MainFlow>();
-            if (mf != null && mf.isOnlineMode && mf.playerSlots != null)
-            {
-                int idx = System.Array.IndexOf(mf.playerSlots, this);
-                if (idx >= 0)
-                    NetworkManager.Instance.SendCardReturn(idx);
-            }
-        }
     }
 
     private void FitToSlot(GameObject card)
@@ -221,100 +202,4 @@ public class Slot : MonoBehaviour
         card.transform.localScale *= scale;
     }
 
-    // ────────────────────────────────────────
-    //  체인 잠금: 슬롯 위에 체인 오버레이 생성
-    // ────────────────────────────────────────
-    public void ChainLock(GameObject chainPrefab)
-    {
-        _isChainLocked = true;
-
-        _chainOverlay = Instantiate(chainPrefab, transform);
-        _chainOverlay.transform.localPosition = Vector3.zero;
-        _chainOverlay.transform.localRotation = Quaternion.identity;
-        _chainOverlay.transform.localScale = Vector3.one;
-
-        // 슬롯 크기에 맞추기
-        FitToSlot(_chainOverlay);
-
-        // 소팅 오더: 카드 위에 표시
-        foreach (var sr in _chainOverlay.GetComponentsInChildren<SpriteRenderer>())
-        {
-            sr.sortingOrder = 10;
-            Color c = sr.color;
-            c.a = 0f;
-            sr.color = c;
-        }
-    }
-
-    public IEnumerator FadeInChain(float duration = 0.5f)
-    {
-        if (_chainOverlay == null) yield break;
-        var renderers = _chainOverlay.GetComponentsInChildren<SpriteRenderer>();
-
-        float elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float a = Mathf.Clamp01(elapsed / duration);
-            foreach (var sr in renderers)
-            {
-                Color c = sr.color;
-                c.a = a;
-                sr.color = c;
-            }
-            yield return null;
-        }
-
-        // 페이드인 완료 후 떨림 시작
-        StartCoroutine(ChainShakeLoop());
-    }
-
-    private IEnumerator ChainShakeLoop()
-    {
-        while (_isChainLocked && _chainOverlay != null)
-        {
-            // 랜덤 간격 대기 (0.8~2초)
-            yield return new WaitForSeconds(Random.Range(0.8f, 2f));
-            if (!_isChainLocked || _chainOverlay == null) break;
-
-            // 짧은 떨림 (2~3회 진동)
-            int shakes = Random.Range(2, 4);
-            float intensity = 0.03f;
-            for (int i = 0; i < shakes; i++)
-            {
-                Vector3 offset = new Vector3(
-                    Random.Range(-intensity, intensity),
-                    Random.Range(-intensity, intensity),
-                    0f);
-                _chainOverlay.transform.localPosition = offset;
-                yield return new WaitForSeconds(0.04f);
-            }
-            _chainOverlay.transform.localPosition = Vector3.zero;
-        }
-    }
-
-    public IEnumerator UnlockChain(float duration = 0.5f)
-    {
-        _isChainLocked = false; // 떨림 루프 중지
-
-        if (_chainOverlay != null)
-        {
-            var renderers = _chainOverlay.GetComponentsInChildren<SpriteRenderer>();
-            float elapsed = 0f;
-            while (elapsed < duration)
-            {
-                elapsed += Time.deltaTime;
-                float a = 1f - Mathf.Clamp01(elapsed / duration);
-                foreach (var sr in renderers)
-                {
-                    Color c = sr.color;
-                    c.a = a;
-                    sr.color = c;
-                }
-                yield return null;
-            }
-            Destroy(_chainOverlay);
-            _chainOverlay = null;
-        }
-    }
 }

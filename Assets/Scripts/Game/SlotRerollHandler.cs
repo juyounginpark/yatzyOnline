@@ -75,7 +75,7 @@ public class SlotRerollHandler
         Slot hoveredSlot = null;
         foreach (var slot in _playerSlots)
         {
-            if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
+            if (slot == null || !slot.HasCard) continue;
 
             // 배치 직후 0.5초 쿨다운
             if (_slotCardPlacedTime.TryGetValue(slot, out float placedTime)

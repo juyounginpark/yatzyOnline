@@ -120,26 +120,13 @@ public class Deck : MonoBehaviour
             {
                 Slot slot = canPlaceInSlot ? FindSlotAtPosition(mouseWorld) : null;
 
-                if (slot != null && !slot.HasCard && !slot.IsChainLocked)
+                if (slot != null && !slot.HasCard)
                 {
-                    var cv = _draggingCard.GetComponent<CardValue>();
                     GameObject cardObj = _draggingCard.gameObject;
                     _spawnedCards.Remove(cardObj);
                     slot.PlaceCard(cardObj);
                     UpdateAllCardBases();
                     TriggerWaveAll(null);
-
-                    // 온라인: 상대에게 카드 배치 알림
-                    if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
-                    {
-                        var mf = FindObjectOfType<MainFlow>();
-                        if (mf != null && mf.isOnlineMode && mf.playerSlots != null && cv != null)
-                        {
-                            int idx = System.Array.IndexOf(mf.playerSlots, slot);
-                            if (idx >= 0)
-                                NetworkManager.Instance.SendCardPlace(idx, cv.value, cv.cardType, cv.isJoker);
-                        }
-                    }
                 }
                 else
                 {

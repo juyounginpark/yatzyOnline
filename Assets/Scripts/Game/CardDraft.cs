@@ -342,6 +342,7 @@ public class CardDraft : MonoBehaviour
         yield return StartCoroutine(FlyToTarget(card, dest));
 
         if (card != null) Destroy(card);
+        if (dest != null) SetCardAlpha(dest, 1f);
 
         _leftCard  = null;
         _rightCard = null;
@@ -593,6 +594,8 @@ public class CardDraft : MonoBehaviour
         // 3) 도착: 드래프트 카드 파괴, 목적지 카드 완전 가시화
         if (chosen   != null) Destroy(chosen);
         if (leftover != null) Destroy(leftover);
+        if (chosenDest   != null) SetCardAlpha(chosenDest,   1f);
+        if (leftoverDest != null) SetCardAlpha(leftoverDest, 1f);
 
         _leftCard  = null;
         _rightCard = null;
@@ -625,6 +628,7 @@ public class CardDraft : MonoBehaviour
         if (hand == null || hand.Count == 0) return null;
 
         GameObject dest = hand[hand.Count - 1];
+        SetCardAlpha(dest, 0f);
         return dest;
     }
 

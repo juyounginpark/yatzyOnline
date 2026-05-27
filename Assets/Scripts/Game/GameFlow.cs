@@ -214,7 +214,10 @@ public class GameFlow : MonoBehaviour
 
         var fxSr = fx.GetComponent<SpriteRenderer>();
         fxSr.sortingOrder = sortOrder;
-        fxSr.color = Color.white;  // 매 프레임 색상 복원 (외부 알파 변경 무효화)
+        
+        // 카드가 투명상태면 이펙트도 투명하게 (드래프트 등)
+        float a = cardSr.color.a;
+        fxSr.color = new Color(1f, 1f, 1f, a);
 
         Vector2 cardSpriteSize = cardSr.sprite.bounds.size;
         Vector3 cardScale = cardSr.transform.lossyScale;

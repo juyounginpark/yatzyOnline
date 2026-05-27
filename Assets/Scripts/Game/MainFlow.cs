@@ -176,7 +176,22 @@ public class MainFlow : MonoBehaviour
         SetDeckScale(deck, activeScale);
         SetDeckScale(oppDeck, inactiveScale);
 
-        // 첫 턴 카드 드래프트 시작
+        // 첫 턴 카드 드래프트 시작 (딜링 애니메이션 후 1.5초 대기)
+        if (cardDraft != null) StartCoroutine(InitialDraftRoutine());
+    }
+
+    private IEnumerator InitialDraftRoutine()
+    {
+        _isTransitioning = true; // 턴 행동 및 타이머 차단
+
+        if (deck != null)
+            while (deck.IsAnimating) yield return null;
+        if (oppDeck != null)
+            while (oppDeck.IsAnimating) yield return null;
+
+        yield return new WaitForSeconds(1.5f);
+
+        _isTransitioning = false;
         if (cardDraft != null) cardDraft.StartDraft();
     }
 
@@ -200,9 +215,9 @@ public class MainFlow : MonoBehaviour
         if (endTurnButtonText != null)
             endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
 
-        // 엔드턴 버튼 상태 (드래프트 중 비활성화, 끝나면 복원)
+        // 엔드턴 버튼 상태 (드래프트 중 또는 전환 중 비활성화, 끝나면 복원)
         if (endTurnButton != null)
-            endTurnButton.interactable = _isPlayerTurn && !isDrafting;
+            endTurnButton.interactable = _isPlayerTurn && !isDrafting && !_isTransitioning;
 
         // ── 체인 DOT 틱 ──
         if (_chainDot != null && _chainDot.IsActive)

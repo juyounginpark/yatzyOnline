@@ -80,17 +80,13 @@ public class Slot : MonoBehaviour
 
         // 카드 정보 저장 후 파괴
         var cv = _placedCard.GetComponent<CardValue>();
-        int cardValue = cv != null ? cv.value : 0;
-        bool cardIsJoker = cv != null && cv.isJoker;
-        CardType cardType = cv != null ? cv.cardType : CardType.Attack;
-
+        
         ClearCard();  // 슬롯 카드 파괴
 
-        // Deck에 동일한 카드를 새로 생성하여 추가
-        if (cardIsJoker)
-            deck.AddJokerCard(cardType);
-        else
-            deck.AddCardByValue(cardValue, cardType);
+        // 새 카드를 패에 추가 (스케일/콜라이더 왜곡 없는 깨끗한 새 객체)
+        // 시작 위치를 이 슬롯의 위치로 지정하여 덱에서 날아오지 않도록 함
+        if (cv.isJoker) deck.AddJokerCard(cv.cardType, transform.position);
+        else            deck.AddCardByValue(cv.value, cv.cardType, transform.position);
 
         // 온라인: 상대에게 카드 회수 알림
         if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame

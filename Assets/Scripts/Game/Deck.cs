@@ -95,9 +95,12 @@ public class Deck : MonoBehaviour
 
     void Update()
     {
-        // 드래프트 중에는 카드 상호작용 차단
+        // 드래프트 중이거나 턴 전환 대기 중에는 카드 상호작용 차단
         if (_cardDraft == null) _cardDraft = FindObjectOfType<CardDraft>();
         if (_cardDraft != null && _cardDraft.IsDrafting) return;
+
+        var mainFlow = FindObjectOfType<MainFlow>();
+        if (mainFlow != null && mainFlow.IsTransitioning) return;
 
         UpdateHoverAndDrag();
     }
@@ -316,7 +319,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  특정 값의 카드를 새로 생성하여 덱에 추가
     // ─────────────────────────────────────────
-    public void AddCardByValue(int value, CardType cardType = CardType.Attack)
+    public void AddCardByValue(int value, CardType cardType = CardType.Attack, Vector3? startPos = null)
     {
         if (_prefabPool == null) return;
 
@@ -325,7 +328,7 @@ public class Deck : MonoBehaviour
         {
             if (entry.value == value && !entry.isJoker && entry.cardType == cardType)
             {
-                SpawnCard(entry.prefab, entry.value, false, entry.cardType, entry.poolIndex);
+                SpawnCard(entry.prefab, entry.value, false, entry.cardType, entry.poolIndex, startPos);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -337,7 +340,7 @@ public class Deck : MonoBehaviour
         {
             if (entry.value == value && !entry.isJoker)
             {
-                SpawnCard(entry.prefab, entry.value, false, cardType, entry.poolIndex);
+                SpawnCard(entry.prefab, entry.value, false, cardType, entry.poolIndex, startPos);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -348,7 +351,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  조커 카드를 새로 생성하여 덱에 추가
     // ─────────────────────────────────────────
-    public void AddJokerCard(CardType cardType = CardType.Attack)
+    public void AddJokerCard(CardType cardType = CardType.Attack, Vector3? startPos = null)
     {
         if (_prefabPool == null) return;
 
@@ -356,7 +359,7 @@ public class Deck : MonoBehaviour
         {
             if (entry.isJoker)
             {
-                SpawnCard(entry.prefab, 0, true, cardType, entry.poolIndex);
+                SpawnCard(entry.prefab, 0, true, cardType, entry.poolIndex, startPos);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -389,11 +392,20 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  내부: 카드 생성 + CardHover 자동 부착
     // ─────────────────────────────────────────
-    private GameObject SpawnCard(GameObject prefab, int value, bool isJoker = false, CardType cardType = CardType.Attack, int poolIndex = 0)
+    private GameObject SpawnCard(GameObject prefab, int value, bool isJoker = false, CardType cardType = CardType.Attack, int poolIndex = 0, Vector3? startPos = null)
     {
         GameObject card = Instantiate(prefab, Parent);
-        card.transform.localPosition = spawnOffset;
-        card.transform.localRotation = Quaternion.identity;
+
+        if (startPos.HasValue)
+        {
+            card.transform.position = startPos.Value;
+            card.transform.rotation = Quaternion.identity;
+        }
+        else
+        {
+            card.transform.localPosition = spawnOffset;
+            card.transform.localRotation = Quaternion.identity;
+        }
 
         if (card.GetComponent<Collider2D>() == null)
             card.AddComponent<BoxCollider2D>();
@@ -419,12 +431,17 @@ public class Deck : MonoBehaviour
     private IEnumerator DealAnimation()
     {
         _isAnimating = true;
+        
+        if (_cardDraft == null) _cardDraft = FindObjectOfType<CardDraft>();
+        Vector3? anchorPos = null;
+        if (_cardDraft != null && _cardDraft.deckAnchor != null)
+            anchorPos = _cardDraft.deckAnchor.position;
 
         for (int i = 0; i < drawCount; i++)
         {
             // 한 장씩 생성
             var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-            SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.cardType, pick.poolIndex);
+            SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.cardType, pick.poolIndex, anchorPos);
 
             // 현재까지 생성된 전체 카드 재배치
             int count = _spawnedCards.Count;

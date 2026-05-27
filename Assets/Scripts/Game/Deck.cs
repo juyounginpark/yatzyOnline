@@ -39,7 +39,7 @@ public class Deck : MonoBehaviour
     public GameObject cardBackPrefab;
 
     [Header("─ 드로우 설정 ─")]
-    public int drawCount = 6;
+    public int drawCount = 3;
     public int maxCards = 8;
 
     [Header("─ 스폰 위치 ─")]
@@ -91,10 +91,13 @@ public class Deck : MonoBehaviour
         DrawCards();
     }
 
+    private CardDraft _cardDraft;
+
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.Space) && !_isAnimating && _draggingCard == null)
-            AddOneCard();
+        // 드래프트 중에는 카드 상호작용 차단
+        if (_cardDraft == null) _cardDraft = FindObjectOfType<CardDraft>();
+        if (_cardDraft != null && _cardDraft.IsDrafting) return;
 
         UpdateHoverAndDrag();
     }
@@ -535,6 +538,26 @@ public class Deck : MonoBehaviour
         prefab = pick.prefab;
         value = pick.value;
         isJoker = pick.isJoker;
+        return true;
+    }
+
+    // ─────────────────────────────────────────
+    //  활성 풀 전체에서 랜덤 카드 1장 (조커 포함, 모든 타입)
+    //  CardDraft 등 외부 추첨용
+    // ─────────────────────────────────────────
+    public bool GetRandomPrefabFromActivePool(
+        out GameObject prefab, out int value, out bool isJoker, out CardType cardType)
+    {
+        prefab = null; value = 0; isJoker = false; cardType = CardType.Attack;
+
+        if (_prefabPool == null) _prefabPool = BuildPrefabPool();
+        if (_prefabPool.Count == 0) return false;
+
+        var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
+        prefab   = pick.prefab;
+        value    = pick.value;
+        isJoker  = pick.isJoker;
+        cardType = pick.cardType;
         return true;
     }
 

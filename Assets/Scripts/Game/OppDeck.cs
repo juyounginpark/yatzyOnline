@@ -12,16 +12,16 @@ using UnityEngine;
 public class OppDeck : MonoBehaviour
 {
     [Header("─ 플레이어 덱 참조 ─")]
+    [Tooltip("모든 설정(drawCount, maxCards, cardBackPrefab, 아치/딜 옵션)을 이 Deck과 동기화")]
     public Deck deck;
-
-    [Header("─ 카드 뒷면 프리팹 ─")]
-    public GameObject cardBackPrefab;
-
-    [Header("─ 드로우 설정 ─")]
-    public int drawCount = 5;
 
     [Header("─ 스폰 위치 ─")]
     public Transform deckSpawnPoint;
+
+    // ─── Deck 동기화 프로퍼티 ───
+    public GameObject cardBackPrefab => deck != null ? deck.cardBackPrefab : null;
+    public int        drawCount       => deck != null ? deck.drawCount      : 0;
+    public int        maxCards        => deck != null ? deck.maxCards       : 0;
 
     // ─── 내부 상태 ───
     private readonly List<GameObject> _spawnedCards = new List<GameObject>();

@@ -203,8 +203,18 @@ public class SlotRerollHandler
         for (int p = 0; p < 16; p++) pix[p] = Color.white;
         maskTex.SetPixels(pix);
         maskTex.Apply();
-        mask.sprite = Sprite.Create(maskTex, new Rect(0, 0, 4, 4),
+        Sprite maskSprite = Sprite.Create(maskTex, new Rect(0, 0, 4, 4),
             new Vector2(0.5f, 0.5f), 4f);
+        mask.sprite = maskSprite;
+
+        // 마스크 영향 범위를 릴 카드(sortingOrder=10)만 포함하도록 엄격히 제한.
+        // → 다른 슬롯 카드(sortingOrder=1)는 stencil 패스에서 완전히 배제
+        mask.isCustomRangeActive = true;
+        int defaultLayerID = SortingLayer.NameToID("Default");
+        mask.frontSortingLayerID = defaultLayerID;
+        mask.backSortingLayerID  = defaultLayerID;
+        mask.frontSortingOrder   = 11;   // 릴 카드(10) 바로 위
+        mask.backSortingOrder    = 9;    // 릴 카드(10) 바로 아래 — 슬롯 카드(1)와 충분히 격리
 
         maskObj.transform.localScale = new Vector3(
             slotWorldSize.x / Mathf.Max(Mathf.Abs(slotLossyScale.x), 0.001f),
@@ -309,15 +319,34 @@ public class SlotRerollHandler
         // ── 정리: 최종 카드만 남기고 나머지 제거 ──
         GameObject finalCard = reelCards[reelCards.Count - 1];
 
+        // 최종 카드를 먼저 마스크에서 해제하고 슬롯에 배치
+        // (다른 릴 카드보다 선행 처리하여 stencil 충돌 방지)
         foreach (var sr in finalCard.GetComponentsInChildren<SpriteRenderer>())
+        {
             sr.maskInteraction = SpriteMaskInteraction.None;
-
+            sr.sortingOrder    = 1;
+        }
         finalCard.transform.SetParent(null);
         slot.PlaceCardRaw(finalCard);
 
+        // 나머지 릴 카드의 maskInteraction 해제
+        foreach (var card in reelCards)
+        {
+            if (card == null || card == finalCard) continue;
+            foreach (var sr in card.GetComponentsInChildren<SpriteRenderer>())
+                sr.maskInteraction = SpriteMaskInteraction.None;
+        }
+
+        // 마스크 컴포넌트를 먼저 비활성화하여 같은 프레임에서 stencil 패스 차단
+        mask.enabled = false;
+
+        // 1프레임 대기: stencil buffer가 GPU에서 완전히 클리어되도록
+        yield return null;
+
         Object.Destroy(reelContainer);
         Object.Destroy(maskObj);
-        if (maskTex != null) Object.Destroy(maskTex);
+        if (maskSprite != null) Object.Destroy(maskSprite);
+        if (maskTex    != null) Object.Destroy(maskTex);
 
         _remaining--;
         _isRerolling = false;

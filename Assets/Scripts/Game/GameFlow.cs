@@ -135,10 +135,15 @@ public class GameFlow : MonoBehaviour
         float dummyScore;
         bool[] contributing = FindContributingIndices(resolved, out dummy, out dummyScore);
 
+        // 호버/드래그된 카드는 이미 hover 테두리가 적용되므로 BestPick 중복 표시 방지
+        GameObject hoveredCard = deck.DraggedCard ?? deck.HoveredCard;
+
         for (int i = 0; i < _bestPickEffects.Count; i++)
         {
             int idx = slotCount + i;
-            if (i < cards.Count && cards[i] != null && idx < contributing.Length && contributing[idx])
+            bool inRange   = i < cards.Count && cards[i] != null;
+            bool isHovered = inRange && cards[i] == hoveredCard;
+            if (inRange && idx < contributing.Length && contributing[idx] && !isHovered)
             {
                 if (_bestPickEffects[i] == null)
                     _bestPickEffects[i] = CreateEffectObject($"BestPickEffect_{i}", effectBestPick);
@@ -209,6 +214,7 @@ public class GameFlow : MonoBehaviour
 
         var fxSr = fx.GetComponent<SpriteRenderer>();
         fxSr.sortingOrder = sortOrder;
+        fxSr.color = Color.white;  // 매 프레임 색상 복원 (외부 알파 변경 무효화)
 
         Vector2 cardSpriteSize = cardSr.sprite.bounds.size;
         Vector3 cardScale = cardSr.transform.lossyScale;
@@ -248,7 +254,7 @@ public class GameFlow : MonoBehaviour
         var go = new GameObject(name);
         var sr = go.AddComponent<SpriteRenderer>();
         sr.sprite = sprite;
-        sr.color = new Color(1f, 1f, 1f, 0.8f);
+        sr.color = Color.white;
         return go;
     }
 

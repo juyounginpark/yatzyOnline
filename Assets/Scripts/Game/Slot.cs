@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Linq;
 using UnityEngine;
 
 public class Slot : MonoBehaviour
@@ -32,23 +33,71 @@ public class Slot : MonoBehaviour
 
     void Update()
     {
-        if (_placedCard == null) return;
+        // 우클릭 → 카드 회수
+        if (!Input.GetMouseButtonDown(1)) return;
+        if (!allowReturn || _placedCard == null || _isChainLocked) return;
 
+        // 드래프트 중에는 회수 차단
+        var cardDraft = FindObjectOfType<CardDraft>();
+        if (cardDraft != null && cardDraft.IsDrafting) return;
+
+        // 같은 프레임에 이미 다른 슬롯이 회수 처리함
+        if (Time.frameCount == _lastReturnFrame) return;
+
+        // 마우스가 이 슬롯 위에 있는지 확인
         Camera cam = Camera.main;
         if (cam == null) return;
-
         Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
         var col = GetComponent<Collider2D>();
         if (col == null || !col.OverlapPoint(mouseWorld)) return;
 
-        // 우클릭: 덱으로 반환 (애니메이션)
-        // 체인 잠금 중에는 반환 불가
-        // _lastReturnFrame 체크로 같은 프레임에 여러 슬롯이 동시에 처리되는 것 방지
-        if (allowReturn && !_isChainLocked && Input.GetMouseButtonDown(1) && !_isFlipping
-            && _lastReturnFrame != Time.frameCount)
+        // MainFlow 참조 — 플레이어 턴이고 전환 중이 아닌지 확인
+        var mainFlow = FindObjectOfType<MainFlow>();
+        if (mainFlow != null)
         {
-            _lastReturnFrame = Time.frameCount;
-            StartCoroutine(ReturnAnimation());
+            if (mainFlow.IsTransitioning) return;
+            // 이 슬롯이 플레이어 슬롯인지 확인
+            if (mainFlow.playerSlots != null
+                && !mainFlow.playerSlots.Contains(this)) return;
+        }
+
+        // Deck 참조 찾기
+        var deck = FindObjectOfType<Deck>();
+        if (deck == null) return;
+
+        // 손패가 이미 가득 차면 회수 불가
+        if (deck.IsHandFull) return;
+
+        _lastReturnFrame = Time.frameCount;
+
+        // GameFlow 이펙트 분리 (파괴 방지)
+        var gameFlow = FindObjectOfType<GameFlow>();
+        if (gameFlow != null && mainFlow != null && mainFlow.playerSlots != null)
+        {
+            int slotIdx = System.Array.IndexOf(mainFlow.playerSlots, this);
+            if (slotIdx >= 0) gameFlow.DetachSlotEffect(slotIdx);
+        }
+
+        // 카드 정보 저장 후 파괴
+        var cv = _placedCard.GetComponent<CardValue>();
+        int cardValue = cv != null ? cv.value : 0;
+        bool cardIsJoker = cv != null && cv.isJoker;
+        CardType cardType = cv != null ? cv.cardType : CardType.Attack;
+
+        ClearCard();  // 슬롯 카드 파괴
+
+        // Deck에 동일한 카드를 새로 생성하여 추가
+        if (cardIsJoker)
+            deck.AddJokerCard(cardType);
+        else
+            deck.AddCardByValue(cardValue, cardType);
+
+        // 온라인: 상대에게 카드 회수 알림
+        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame
+            && mainFlow != null && mainFlow.isOnlineMode && mainFlow.playerSlots != null)
+        {
+            int idx = System.Array.IndexOf(mainFlow.playerSlots, this);
+            if (idx >= 0) NetworkManager.Instance.SendCardReturn(idx);
         }
     }
 
@@ -151,58 +200,6 @@ public class Slot : MonoBehaviour
         _placedCard = null;
         card.transform.SetParent(null);
         return card;
-    }
-
-    private IEnumerator ReturnAnimation()
-    {
-        _isFlipping = true;
-
-        if (_placedCard != null)
-        {
-            float elapsed = 0f;
-            float duration = 0.2f;
-            Vector3 startScale = _placedCard.transform.localScale;
-
-            while (elapsed < duration)
-            {
-                elapsed += Time.deltaTime;
-                float t = elapsed / duration;
-                _placedCard.transform.localScale = Vector3.Lerp(startScale, Vector3.zero, t);
-                yield return null;
-            }
-        }
-
-        ReturnCardToDeck();
-        _isFlipping = false;
-    }
-    private void ReturnCardToDeck()
-    {
-        var deck = FindObjectOfType<Deck>();
-        if (deck == null || deck.IsHandFull) return;
-
-        bool isJoker = _placedCardIsJoker;
-        int value = _placedCardValue;
-        CardType type = _placedCardType;
-
-        Destroy(_placedCard);
-        _placedCard = null;
-
-        if (isJoker)
-            deck.AddJokerCard(type);
-        else
-            deck.AddCardByValue(value, type);
-
-        // 온라인: 상대에게 카드 반환 알림
-        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
-        {
-            var mf = FindObjectOfType<MainFlow>();
-            if (mf != null && mf.isOnlineMode && mf.playerSlots != null)
-            {
-                int idx = System.Array.IndexOf(mf.playerSlots, this);
-                if (idx >= 0)
-                    NetworkManager.Instance.SendCardReturn(idx);
-            }
-        }
     }
 
     private void FitToSlot(GameObject card)

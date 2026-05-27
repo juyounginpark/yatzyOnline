@@ -43,6 +43,9 @@ public class MainFlow : MonoBehaviour
     public GameObject rerollCountObject;
     public int        maxSlotRerolls = 2;
 
+    [Header("─ 카드 드래프트 ─")]
+    public CardDraft cardDraft;
+
     [Header("─ 턴 설정 ─")]
     public float turnTime = 30f;
 
@@ -172,6 +175,9 @@ public class MainFlow : MonoBehaviour
         UpdateInteraction();
         SetDeckScale(deck, activeScale);
         SetDeckScale(oppDeck, inactiveScale);
+
+        // 첫 턴 카드 드래프트 시작
+        if (cardDraft != null) cardDraft.StartDraft();
     }
 
     // ─────────────────────────────────────────
@@ -182,7 +188,8 @@ public class MainFlow : MonoBehaviour
         // ── 타이머 ──
         // 온라인: 내 턴일 때만 로컬 카운트다운, 상대 턴 타이머는 Sync 패킷으로 수신
         // 오프라인: 기존 로직 유지
-        bool pauseTimer = _isTransitioning;
+        bool isDrafting = cardDraft != null && cardDraft.IsDrafting;
+        bool pauseTimer = _isTransitioning || isDrafting;
         if (!isOnlineMode)
             pauseTimer = pauseTimer || (!_isPlayerTurn && _oppAuto != null && _oppAuto.IsAnimating);
         else
@@ -192,6 +199,10 @@ public class MainFlow : MonoBehaviour
 
         if (endTurnButtonText != null)
             endTurnButtonText.text = Mathf.CeilToInt(Mathf.Max(0f, _timer)).ToString();
+
+        // 엔드턴 버튼 상태 (드래프트 중 비활성화, 끝나면 복원)
+        if (endTurnButton != null)
+            endTurnButton.interactable = _isPlayerTurn && !isDrafting;
 
         // ── 체인 DOT 틱 ──
         if (_chainDot != null && _chainDot.IsActive)
@@ -212,8 +223,8 @@ public class MainFlow : MonoBehaviour
         // 온라인 폴링
         PollOnlinePackets();
 
-        // 슬롯 리롤
-        if (_isPlayerTurn && !_isTransitioning && !_reroll.IsRerolling)
+        // 슬롯 리롤 (드래프트 중 차단)
+        if (_isPlayerTurn && !_isTransitioning && !_reroll.IsRerolling && !isDrafting)
             _reroll.Tick();
     }
 
@@ -322,6 +333,8 @@ public class MainFlow : MonoBehaviour
     public void EndTurn()
     {
         if (_isTransitioning || IsRouletteActive) return;
+        // 드래프트 미완료 시 턴 종료 불가
+        if (cardDraft != null && cardDraft.IsDrafting) return;
         if (endTurnButtonText != null) endTurnButtonText.text = "...";
         if (endTurnButton != null)     endTurnButton.gameObject.SetActive(false);
         StartCoroutine(DoEndTurn());
@@ -378,10 +391,7 @@ public class MainFlow : MonoBehaviour
         int savedExp = (wasPlayerTurn && exp != null && turnScore > 0f)
             ? Mathf.RoundToInt(turnScore) : 0;
 
-        // 카드 회수 먼저 (체인 잠금 슬롯은 스킵 → 카드 잔류)
-        ReturnRemainingCards(sourceSlots);
-
-        // ── 9. 체인 잠금 해제 (카드 회수 후) ──
+        // ── 9. 체인 잠금 해제 ──
         Slot[] chainedSlots = _isPlayerTurn ? playerSlots : oppSlots;
         yield return StartCoroutine(_chainDot.UnlockAll(chainedSlots));
 
@@ -392,7 +402,6 @@ public class MainFlow : MonoBehaviour
         foreach (var gui in FindObjectsOfType<GameUI>())
             gui.isScoreOverridden = false;
 
-        DrawCards();
         UpdateInteraction();
 
         yield return StartCoroutine(AnimateTurnScale());
@@ -421,6 +430,9 @@ public class MainFlow : MonoBehaviour
         _timer = turnTime;
         _syncTimer = 0f;  // 즉시 첫 Sync 전송
         _isTransitioning = false;
+
+        // ── 14. 새 턴 카드 드래프트 ──
+        if (cardDraft != null) cardDraft.StartDraft();
     }
 
     // ═════════════════════════════════════════
@@ -606,47 +618,6 @@ public class MainFlow : MonoBehaviour
 
         foreach (var card in cards)
             if (card != null) card.transform.localScale = scale;
-    }
-
-    private void ReturnRemainingCards(Slot[] sourceSlots)
-    {
-        if (sourceSlots == null) return;
-        foreach (var slot in sourceSlots)
-        {
-            if (slot == null || !slot.HasCard || slot.IsChainLocked) continue;
-            var cv      = slot.GetCardValue();
-            int value   = cv != null ? cv.value : 0;
-            bool isJoker = cv != null && cv.isJoker;
-            CardType type = cv != null ? cv.cardType : CardType.Attack;
-
-            slot.ClearCard();
-
-            if (_isPlayerTurn)
-            {
-                if (isJoker) deck.AddJokerCard(type);
-                else if (value > 0) deck.AddCardByValue(value, type);
-            }
-            else
-            {
-                if (value > 0) oppDeck.AddCardByValue(value, type);
-            }
-        }
-    }
-
-    private void DrawCards()
-    {
-        int cardsInPlayerSlots = 0;
-        if (playerSlots != null)
-            foreach (var s in playerSlots)
-                if (s != null && s.HasCard) cardsInPlayerSlots++;
-
-        int playerDraw = Mathf.Max(0, 6 - deck.SpawnedCards.Count - cardsInPlayerSlots);
-        for (int i = 0; i < playerDraw; i++)
-            deck.AddOneCard();
-
-        int oppDraw = Mathf.Max(0, 6 - oppDeck.SpawnedCards.Count);
-        for (int i = 0; i < oppDraw; i++)
-            oppDeck.AddOneCard();
     }
 
     private void UpdateInteraction()

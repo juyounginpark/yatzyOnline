@@ -501,7 +501,7 @@ MonoBehaviour:
     - cardName: Joker
       prefab: {fileID: 8002144047082630695, guid: 2f9a2324b8db4f3429f388bf58e42533, type: 3}
   cardBackPrefab: {fileID: 8002144047082630695, guid: 76d02f272784433448ed9557901a4ab2, type: 3}
-  drawCount: 4
+  drawCount: 3
   maxCards: 6
   deckSpawnPoint: {fileID: 558328321}
   archRadius: 3
@@ -5265,8 +5265,8 @@ SceneRoots:
   - {fileID: 523267608}
   - {fileID: 656880039}
   - {fileID: 863091647}
+  - {fileID: 2096695029}
+  - {fileID: 1346926374}
   - {fileID: 484160615}
   - {fileID: 913808644}
   - {fileID: 679698597}
-  - {fileID: 2096695029}
-  - {fileID: 1346926374}

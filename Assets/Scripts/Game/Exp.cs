@@ -6,6 +6,9 @@ using TMPro;
 public class Exp : MonoBehaviour
 {
     [Header("─ EXP 설정 ─")]
+    [Tooltip("체크 해제 시 경험치가 전혀 차지 않음 (레벨업/룰렛 비활성)")]
+    public bool expEnabled = true;
+
     [Tooltip("레벨당 필요 경험치 증가량 (1레벨=차수, 2레벨=차수×2, ...)")]
     public int expPerLevelStep = 100;
 
@@ -71,6 +74,8 @@ public class Exp : MonoBehaviour
     /// </summary>
     public int AddExp(int amount)
     {
+        if (!expEnabled) return 0;
+
         int oldLevel = _currentLevel;
         _currentExp += amount;
 
@@ -94,6 +99,12 @@ public class Exp : MonoBehaviour
     /// </summary>
     public IEnumerator AddExpAnimated(int amount, System.Func<IEnumerator> onLevelUp = null, System.Action<int> onComplete = null)
     {
+        if (!expEnabled)
+        {
+            onComplete?.Invoke(0);
+            yield break;
+        }
+
         _isAnimating = true;
 
         int levelsGained = 0;

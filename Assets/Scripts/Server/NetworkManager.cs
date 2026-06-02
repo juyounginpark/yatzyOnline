@@ -58,15 +58,15 @@ public class NetworkManager : MonoBehaviour
     public readonly System.Collections.Generic.Queue<int> IncomingCardReturns
         = new System.Collections.Generic.Queue<int>();
     public SlotCardData[] IncomingTurnEnd { get; private set; }
-    public int[]          IncomingChainLockIndices { get; private set; }
     public float          IncomingSenderHp   { get; private set; } = -1f;
     public float          IncomingReceiverHp { get; private set; } = -1f;
+    public bool           IncomingFieldGuard { get; private set; } = false;
     public void ConsumeIncomingTurnEnd()
     {
         IncomingTurnEnd = null;
-        IncomingChainLockIndices = null;
         IncomingSenderHp   = -1f;
         IncomingReceiverHp = -1f;
+        IncomingFieldGuard = false;
     }
 
     // ─── Sync 패킷 (실시간 타이머+HP) ───
@@ -76,9 +76,15 @@ public class NetworkManager : MonoBehaviour
     public bool  HasIncomingSync        { get; private set; }
     public void ConsumeIncomingSync() { HasIncomingSync = false; }
 
-    // 하위 호환 — 이전 코드에서 참조하는 경우 대비
-    public SlotCardData[] PendingTurnEnd => IncomingTurnEnd;
-    public void ConsumePendingTurnEnd() => ConsumeIncomingTurnEnd();
+    // ─── 드래프트 동기화 (턴 플레이어 → 상대) ───
+    public DraftData IncomingDraft     { get; private set; }
+    public bool      HasIncomingDraft  { get; private set; }
+    public void ConsumeIncomingDraft() { HasIncomingDraft = false; }
+
+    // ─── Seed 동기화 (초기 카드 뽑기 RNG) ───
+    public int  IncomingSeed     { get; private set; }
+    public bool HasIncomingSeed  { get; private set; }
+    public void ConsumeIncomingSeed() { HasIncomingSeed = false; }
 
     private string _pendingGameHost;
     private ushort _pendingGamePort;
@@ -101,10 +107,6 @@ public class NetworkManager : MonoBehaviour
     public event Action               OnMatchServerConnected;
     public event Action               OnMatchFound;
     public event Action               OnGameReady;
-    public event Action<bool>         OnGoFirstDecided;
-    public event Action<SlotCardData[]> OnOpponentTurnEnd;
-    public event Action<int, int, CardType, bool> OnOpponentCardPlaced;
-    public event Action<int>          OnOpponentCardReturned;
     public event Action<bool>         OnGameOver;
     public event Action               OnOpponentDisconnected;
 
@@ -116,6 +118,11 @@ public class NetworkManager : MonoBehaviour
         DontDestroyOnLoad(gameObject);
         _myClientId = Guid.NewGuid().ToString("N").Substring(0, 8);
         Debug.Log($"[Net] 클라이언트 ID: {_myClientId}");
+    }
+
+    void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
     }
 
     // ─────────────────────────────────────────
@@ -132,7 +139,6 @@ public class NetworkManager : MonoBehaviour
         {
             _pendingGameStart = false;
             // 호스트/게스트 모두 여기서 씬 이동 — 릴레이 패킷에 의존하지 않음
-            OnGoFirstDecided?.Invoke(IGoFirst);
             OnGameReady?.Invoke();
         }
 
@@ -237,8 +243,12 @@ public class NetworkManager : MonoBehaviour
         State = NetState.ConnectingMatchServer;
         Debug.Log("[Net] 매칭 서버 연결 중...");
 
+        // 중복 구독 방지 — 항상 -= 후 += 패턴
+        Backend.Match.OnJoinMatchMakingServer -= OnJoinMatchServerHandler;
         Backend.Match.OnJoinMatchMakingServer += OnJoinMatchServerHandler;
+        Backend.Match.OnMatchMakingRoomCreate -= OnMatchMakingRoomCreateHandler;
         Backend.Match.OnMatchMakingRoomCreate += OnMatchMakingRoomCreateHandler;
+        Backend.Match.OnMatchMakingResponse   -= OnMatchMakingResponseHandler;
         Backend.Match.OnMatchMakingResponse   += OnMatchMakingResponseHandler;
 
         ErrorInfo errorInfo;
@@ -337,9 +347,12 @@ public class NetworkManager : MonoBehaviour
         ushort port  = args.RoomInfo.m_inGameServerEndPoint.m_port;
         string token = args.RoomInfo.m_inGameRoomToken;
 
-        // 인게임 이벤트 등록
+        // 인게임 이벤트 등록 (중복 구독 방지)
+        Backend.Match.OnSessionListInServer -= OnSessionListHandler;
         Backend.Match.OnSessionListInServer += OnSessionListHandler;
+        Backend.Match.OnMatchRelay          -= OnRelayReceivedHandler;
         Backend.Match.OnMatchRelay          += OnRelayReceivedHandler;
+        Backend.Match.OnSessionOffline      -= OnSessionOfflineHandler;
         Backend.Match.OnSessionOffline      += OnSessionOfflineHandler;
 
         // Poll 콜백 내부에서 직접 JoinGameServer 호출 시 SDK 충돌 가능
@@ -357,6 +370,7 @@ public class NetworkManager : MonoBehaviour
         _joinRetryCount++;
         Debug.Log($"[Net] 게임 서버 접속 시도 ({_joinRetryCount}/{MaxJoinRetries}) — {_pendingGameHost}:{_pendingGamePort}");
 
+        Backend.Match.OnSessionJoinInServer -= OnGameServerJoinedHandler;
         Backend.Match.OnSessionJoinInServer += OnGameServerJoinedHandler;
 
         ErrorInfo errorInfo;
@@ -436,13 +450,10 @@ public class NetworkManager : MonoBehaviour
 
         switch (GamePacket.GetType(json))
         {
-            case PacketType.GameReady:
-                break; // 씬 이동은 OnSessionListInServer에서 처리 — 릴레이 불필요
-
             case PacketType.TurnEnd:
                 Debug.Log("[Net] TurnEnd 큐에 저장");
                 IncomingTurnEnd = GamePacket.ParseTurnEnd(json);
-                IncomingChainLockIndices = GamePacket.ParseChainLockIndices(json);
+                IncomingFieldGuard = GamePacket.ParseFieldGuard(json);
                 float shp, rhp;
                 GamePacket.ParseHp(json, out shp, out rhp);
                 IncomingSenderHp   = shp;
@@ -473,7 +484,21 @@ public class NetworkManager : MonoBehaviour
                 HasIncomingSync        = true;
                 break;
             }
+            case PacketType.Draft:
+                IncomingDraft    = GamePacket.ParseDraft(json);
+                HasIncomingDraft = true;
+                Debug.Log("[Net] Draft 수신");
+                break;
+
+            case PacketType.Seed:
+                IncomingSeed    = GamePacket.ParseSeed(json);
+                HasIncomingSeed = true;
+                Debug.Log($"[Net] Seed 수신: {IncomingSeed}");
+                break;
+
             case PacketType.GameOver:
+                if (_gameOverHandled) break;  // 중복 발화 방지 (양측이 동시에 보낸 경우)
+                _gameOverHandled = true;
                 OnGameOver?.Invoke((int)json["win"] == 1);
                 break;
         }
@@ -491,12 +516,12 @@ public class NetworkManager : MonoBehaviour
     // ─────────────────────────────────────────
     //  5. 데이터 송신
     // ─────────────────────────────────────────
-    public void SendTurnEnd(SlotCardData[] slots, int[] chainLockIndices = null,
-        float senderHp = -1f, float receiverHp = -1f)
+    public void SendTurnEnd(SlotCardData[] slots,
+        float senderHp = -1f, float receiverHp = -1f, bool fieldGuard = false)
     {
         if (State != NetState.InGame) { Debug.LogWarning("[Net] SendTurnEnd 무시 — State:" + State); return; }
-        Debug.Log($"[Net] TurnEnd 전송 — 슬롯 수: {slots?.Length ?? 0}, 체인잠금: {chainLockIndices?.Length ?? 0}, HP:{senderHp}/{receiverHp}");
-        SendRaw(GamePacket.MakeTurnEnd(slots, chainLockIndices, senderHp, receiverHp));
+        Debug.Log($"[Net] TurnEnd 전송 — 슬롯 수: {slots?.Length ?? 0}, HP:{senderHp}/{receiverHp}, Guard:{fieldGuard}");
+        SendRaw(GamePacket.MakeTurnEnd(slots, senderHp, receiverHp, fieldGuard));
     }
 
     public void SendSync(float timer, float senderHp, float receiverHp)
@@ -517,24 +542,54 @@ public class NetworkManager : MonoBehaviour
         SendRaw(GamePacket.MakeCardReturn(slotIndex));
     }
 
-    public void SendGameOver(bool opponentWins)
+    // 드래프트 결과 송신 (내 턴에 카드를 고른 뒤 호출)
+    // me  = 내 패로 가져간 카드, opp = 상대 패로 넘긴 카드
+    // left/right = 제시된 2장 전체 정보, choiceIsLeft = 왼쪽 선택 여부
+    public void SendDraft(bool hasMe, int meV, CardType meType, bool meJoker,
+                          bool hasOpp, int oppV, CardType oppType, bool oppJoker,
+                          bool hasLeft, int leftV, CardType leftType, bool leftJoker,
+                          bool hasRight, int rightV, CardType rightType, bool rightJoker,
+                          bool choiceIsLeft, bool isSingleCard = false)
     {
         if (State != NetState.InGame) return;
+        SendRaw(GamePacket.MakeDraft(hasMe, meV, (int)meType, meJoker,
+                                     hasOpp, oppV, (int)oppType, oppJoker,
+                                     hasLeft, leftV, (int)leftType, leftJoker,
+                                     hasRight, rightV, (int)rightType, rightJoker,
+                                     choiceIsLeft, isSingleCard));
+    }
+
+    // RNG Seed 송신 (호스트 → 게스트, 초기 카드 뽑기 동기화)
+    public void SendSeed(int seed)
+    {
+        if (State != NetState.InGame) return;
+        SendRaw(GamePacket.MakeSeed(seed));
+    }
+
+    // 정책: 패배측(HP 0 도달측)에서만 호출 — 양측이 동시 호출해도 _gameOverHandled로 중복 방지
+    public void SendGameOver(bool opponentWins)
+    {
+        if (State != NetState.InGame || _gameOverHandled) return;
+        _gameOverHandled = true;
         SendRaw(GamePacket.MakeGameOver(receiverWins: opponentWins));
     }
+
+    private bool _gameOverHandled;
 
     private void SendRaw(string json)
     {
         // from 필드 삽입 — 수신 측에서 자신이 보낸 패킷인지 구분
-        try
+        // 파싱 실패 시 from 누락 → 자기 에코 위험 → 송신 차단
+        JsonData j;
+        try { j = GamePacket.Parse(json); }
+        catch (Exception e)
         {
-            var j = GamePacket.Parse(json);
-            j["from"] = _myClientId;
-            json = JsonMapper.ToJson(j);
+            Debug.LogError($"[Net] SendRaw 패킷 파싱 실패 — 전송 취소 (자기 에코 방지): {e.Message}");
+            return;
         }
-        catch { /* 파싱 실패 시 원본 그대로 전송 */ }
+        j["from"] = _myClientId;
 
-        byte[] data = System.Text.Encoding.UTF8.GetBytes(json);
+        byte[] data = System.Text.Encoding.UTF8.GetBytes(JsonMapper.ToJson(j));
         Backend.Match.SendDataToInGameRoom(data);
     }
 
@@ -553,5 +608,22 @@ public class NetworkManager : MonoBehaviour
         Backend.Match.LeaveGameServer();
         Backend.Match.LeaveMatchMakingServer();
         State = NetState.Disconnected;
+
+        // 다음 매치로 이전 패킷이 새지 않도록 큐/상태 초기화
+        ClearIncomingQueues();
+    }
+
+    private void ClearIncomingQueues()
+    {
+        IncomingCardPlaces.Clear();
+        IncomingCardReturns.Clear();
+        ConsumeIncomingTurnEnd();
+        ConsumeIncomingSync();
+        ConsumeIncomingDraft();
+        ConsumeIncomingSeed();
+        IncomingSyncTimer      = -1f;
+        IncomingSyncSenderHp   = -1f;
+        IncomingSyncReceiverHp = -1f;
+        _gameOverHandled       = false;
     }
 }

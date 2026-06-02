@@ -16,6 +16,17 @@ public class GameFlow : MonoBehaviour
     [Tooltip("슬롯에 넣었을 때 최고점이 나오는 덱 카드에 표시")]
     public Sprite effectBestPick;
 
+    [Tooltip("방어 룰렛: 현재 선택된 칸에 덧씌우는 테두리 (비우면 카드 강조로 대체)")]
+    public Sprite effectRoulette;
+
+    [Header("─ 조커 잭팟 (조커 5장 특수 콤보) ─")]
+    [Tooltip("조커 5장일 때 표시할 콤보 이름")]
+    public string jokerComboName = "???";
+    [Tooltip("조커 5장 콤보 점수 랜덤 최소")]
+    public float jokerJackpotMin = 200f;
+    [Tooltip("조커 5장 콤보 점수 랜덤 최대")]
+    public float jokerJackpotMax = 300f;
+
     [Header("─ 참조 ─")]
     public Deck deck;
 
@@ -26,12 +37,20 @@ public class GameFlow : MonoBehaviour
     private string _lastBestCombo = "";
     private GameObject _lastEffectTarget;
 
-    // ─── 외부 참조용 현재 상태 ───
+    // ─── 방어 룰렛 이펙트 ───
+    private GameObject _rouletteEffect;
+    private bool       _rouletteActive;
+    private GameObject _rouletteScaleCard;   // fallback(테두리 스프라이트 없음) 강조 대상
+    private Vector3    _rouletteScaleBase;
+
     public float CurrentBestScore { get; private set; }
     public string CurrentBestRule { get; private set; } = "";
 
+    private MainFlow _mainFlow;
+
     void Start()
     {
+        _mainFlow = FindObjectOfType<MainFlow>();
         if (deck == null)
             deck = FindObjectOfType<Deck>();
 
@@ -55,9 +74,82 @@ public class GameFlow : MonoBehaviour
 
     void Update()
     {
+        // 룰렛 연출 중에는 다른 이펙트를 갱신하지 않음 (카드 파괴와 충돌 방지)
+        if (_rouletteActive) return;
+
+        // 플레이어 턴이 아니거나 턴 전환 연출 중이면 이펙트를 숨김
+        if (_mainFlow != null && (!_mainFlow.IsPlayerTurn || _mainFlow.IsTransitioning))
+        {
+            DetachAllEffects();
+            return;
+        }
+
         UpdateHoverEffect();
         UpdateSlotEffects();
         UpdateBestPickEffect();
+    }
+
+    // ─────────────────────────────────────────
+    //  방어 룰렛 이펙트 (현재 선택 칸에 테두리 덧씌우기)
+    // ─────────────────────────────────────────
+    /// <summary>룰렛 테두리를 해당 슬롯 카드 위로 이동/표시</summary>
+    public void ShowRouletteEffect(Slot slot)
+    {
+        // 룰렛 시작 시 기존 이펙트를 모두 떼어 카드 파괴와 얽히지 않게 함
+        if (!_rouletteActive)
+        {
+            _rouletteActive = true;
+            DetachAllEffects();
+        }
+
+        var card = slot != null ? slot.GetPlacedCard() : null;
+        if (card == null) return;
+
+        // 이전 fallback 강조 복원
+        RestoreRouletteScale();
+
+        if (effectRoulette != null)
+        {
+            if (_rouletteEffect == null)
+                _rouletteEffect = CreateEffectObject("RouletteEffect", effectRoulette);
+            _rouletteEffect.SetActive(true);
+            AttachEffect(_rouletteEffect, card, effectRoulette, 110);
+        }
+        else
+        {
+            // 테두리 스프라이트가 없으면 카드를 살짝 키워 강조
+            _rouletteScaleCard = card;
+            _rouletteScaleBase = card.transform.localScale;
+            card.transform.localScale = _rouletteScaleBase * 1.12f;
+        }
+    }
+
+    /// <summary>테두리만 떼고 룰렛 상태는 유지 (선택 카드 파괴 직전 호출)</summary>
+    public void ClearRouletteBorder()
+    {
+        RestoreRouletteScale();
+        DetachEffect(_rouletteEffect);
+    }
+
+    /// <summary>룰렛 종료 — 테두리/강조 해제 및 일반 이펙트 갱신 재개</summary>
+    public void HideRouletteEffect()
+    {
+        ClearRouletteBorder();
+        _rouletteActive = false;
+    }
+
+    private void RestoreRouletteScale()
+    {
+        if (_rouletteScaleCard != null && _rouletteScaleBase != Vector3.zero)
+            _rouletteScaleCard.transform.localScale = _rouletteScaleBase;
+        _rouletteScaleCard = null;
+    }
+
+    private void DetachAllEffects()
+    {
+        foreach (var fx in _slotEffects)    DetachEffect(fx);
+        foreach (var fx in _bestPickEffects) DetachEffect(fx);
+        DetachEffect(_hoverEffect);
     }
 
     // ─────────────────────────────────────────
@@ -234,7 +326,7 @@ public class GameFlow : MonoBehaviour
 
     private void DetachEffect(GameObject fx)
     {
-        if (fx == null) return;
+        if (fx == null || !fx.activeSelf) return;
         fx.transform.SetParent(null);
         fx.SetActive(false);
     }
@@ -292,6 +384,10 @@ public class GameFlow : MonoBehaviour
         }
         resolvedValues = ResolveJokersOptimal(slotValues, jokerFlags);
 
+        // 조커 5장 특수 콤보
+        if (TryJokerJackpot(targetSlots, jokerFlags, out bestComboName, out bestComboScore))
+            return;
+
         List<int> filled = new List<int>();
         for (int i = 0; i < resolvedValues.Length; i++)
             if (resolvedValues[i] > 0) filled.Add(resolvedValues[i]);
@@ -320,9 +416,74 @@ public class GameFlow : MonoBehaviour
                 }
             }
         }
+        // 조커 5장 특수 콤보 — 모든 배치 카드가 기여
+        if (TryJokerJackpot(slots, jokerFlags, out bestComboName, out bestComboScore))
+        {
+            bool[] allContrib = new bool[slots.Length];
+            for (int i = 0; i < slots.Length; i++)
+                allContrib[i] = slots[i] != null && slots[i].HasVisibleCard
+                    && !slots[i].IsChainLocked && slots[i].GetCardValue() != null;
+            return allContrib;
+        }
+
         int[] resolved = ResolveJokersOptimal(slotValues, jokerFlags);
         return FindContributingIndices(resolved, out bestComboName, out bestComboScore);
     }
+
+    // ─────────────────────────────────────────
+    //  조커 5장 특수 콤보(잭팟) — 점수는 필드별로 1회 추첨 후 캐시
+    // ─────────────────────────────────────────
+    private readonly Dictionary<object, float> _jokerJackpot = new Dictionary<object, float>();
+
+    // 모든 배치 카드가 조커(5장)면 name/score를 채우고 true 반환
+    private bool TryJokerJackpot(Slot[] s, bool[] jokerFlags, out string name, out float score)
+    {
+        name = "";
+        score = 0f;
+
+        int joker = 0, placed = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != null && s[i].HasVisibleCard && !s[i].IsChainLocked
+                && s[i].GetCardValue() != null)
+            {
+                placed++;
+                if (jokerFlags[i]) joker++;
+            }
+        }
+
+        if (joker == 5 && placed == 5)
+        {
+            name  = jokerComboName;
+            score = GetJokerJackpotScore(s);
+            return true;
+        }
+
+        ClearJokerJackpot(s);  // 조건 해제 시 캐시 비워 다음 5조커 때 재추첨
+        return false;
+    }
+
+    // 필드(첫 슬롯)별로 점수 캐시 — 매 프레임 호출돼도 같은 값, 표시=판정 일치
+    private object JackpotKey(Slot[] s)
+        => (s != null && s.Length > 0 && s[0] != null) ? (object)s[0] : this;
+
+    private float GetJokerJackpotScore(Slot[] s)
+    {
+        object key = JackpotKey(s);
+        if (!_jokerJackpot.TryGetValue(key, out float v))
+        {
+            // 온라인 양 클라이언트가 동일한 잭팟 점수를 갖도록 공유 시드 기반 결정적 난수 사용.
+            // (UnityEngine.Random은 클라이언트마다 달라 표시/데미지가 어긋남)
+            int seed = _mainFlow != null ? _mainFlow.SharedSeed : 0;
+            var rng = new System.Random(seed);
+            v = rng.Next(Mathf.RoundToInt(jokerJackpotMin),
+                         Mathf.RoundToInt(jokerJackpotMax) + 1);
+            _jokerJackpot[key] = v;
+        }
+        return v;
+    }
+
+    private void ClearJokerJackpot(Slot[] s) => _jokerJackpot.Remove(JackpotKey(s));
 
     // ─────────────────────────────────────────
     //  조커 최적 값 해석 (1~6 전부 시도, 최고 점수 채택)

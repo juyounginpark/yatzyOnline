@@ -95,6 +95,21 @@ public class OppDeck : MonoBehaviour
         StartCoroutine(DealAnimation());
     }
 
+    /// <summary>온라인용: 동일한 seed로 결정적 카드 뽑기 (양쪽 클라이언트 동일 상대 손패 보장)</summary>
+    public void DrawCards(int seed)
+    {
+        ClearCards();
+
+        if (cardBackPrefab == null)
+        {
+            Debug.LogWarning("[OppDeck] 카드 뒷면 프리팹이 지정되지 않았습니다.");
+            return;
+        }
+
+        var rng = new System.Random(seed + 1); // Deck과 구분하기 위해 seed+1
+        StartCoroutine(DealAnimation(rng));
+    }
+
     // ─────────────────────────────────────────
     //  카드 1장 추가
     // ─────────────────────────────────────────
@@ -157,6 +172,23 @@ public class OppDeck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  카드 1장 제거 (상대가 카드를 슬롯에 낼 때 손패 개수 동기화용)
+    //  손패는 모두 뒷면이라 어느 카드를 빼도 무방 → 마지막 카드를 제거·파괴
+    // ─────────────────────────────────────────
+    public void RemoveOneCard()
+    {
+        if (_spawnedCards.Count == 0) return;
+        int idx = _spawnedCards.Count - 1;
+
+        GameObject card = _spawnedCards[idx];
+        _spawnedCards.RemoveAt(idx);
+        if (idx < _targetPositions.Count) _targetPositions.RemoveAt(idx);
+        if (idx < _targetRotations.Count) _targetRotations.RemoveAt(idx);
+        if (card != null) Destroy(card);
+        UpdateAllTargets();
+    }
+
+    // ─────────────────────────────────────────
     //  내부: 카드 생성 (상호작용 컴포넌트 없음)
     // ─────────────────────────────────────────
     private GameObject SpawnCard(int value, CardType cardType = CardType.Attack)
@@ -180,15 +212,39 @@ public class OppDeck : MonoBehaviour
     // ─────────────────────────────────────────
     //  딜 애니메이션: 한 장씩 생성
     // ─────────────────────────────────────────
-    private IEnumerator DealAnimation()
+    private IEnumerator DealAnimation(System.Random rng = null)
     {
         _isAnimating = true;
 
+        // 결정적 타입 풀 (rng 사용 시)
+        var activeTypes = new System.Collections.Generic.List<CardType>();
+        if (rng != null && deck != null && deck.deckGroups != null)
+        {
+            foreach (var group in deck.deckGroups)
+                if (group != null && group.isActive) activeTypes.Add(group.groupType);
+        }
+
         for (int i = 0; i < drawCount; i++)
         {
-            int value = Random.Range(1, 7);
-            SpawnCard(value, GetRandomType());
+            int value;
+            CardType type;
+            if (rng != null)
+            {
+                value = rng.Next(1, 7); // 1~6
+                type = activeTypes.Count > 0
+                    ? activeTypes[rng.Next(activeTypes.Count)]
+                    : CardType.Attack;
+            }
+            else
+            {
+                value = Random.Range(1, 7);
+                type = GetRandomType();
+            }
+            SpawnCard(value, type);
             UpdateAllTargets();
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
 
             yield return new WaitForSeconds(deck.dealDelay);
         }

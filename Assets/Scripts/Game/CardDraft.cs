@@ -17,6 +17,9 @@ public class CardDraft : MonoBehaviour
     [Tooltip("카드가 출발하는 위치 (덱). 미설정 시 각 카드가 자기 앵커에서 그대로 출발")]
     public Transform deckAnchor;
 
+    [Tooltip("상대 덱 앵커 (상대 파괴 카드가 날아갈 위치). 미설정 시 OppDeck 스폰 지점 사용")]
+    public Transform oppDeckAnchor;
+
     [Tooltip("1번 카드 도착 위치/크기/회전 앵커")]
     public Transform card1Anchor;
 
@@ -94,9 +97,35 @@ public class CardDraft : MonoBehaviour
 
     public bool IsDrafting => _isDrafting;
 
+    // 온라인: 상대(턴 플레이어)의 드래프트 패킷을 기다리는 중
+    private bool _awaitingRemoteDraft;
+    public bool IsAwaitingRemoteDraft => _awaitingRemoteDraft;
+
+    [Header("─ 온라인 ─")]
+    [Tooltip("원격 드래프트 패킷 대기 최대 시간(초). 초과 시 스킵하여 데드락 방지")]
+    public float remoteDraftTimeout = 8f;
+    private float _remoteDraftWait;
+
+    [Header("─ 뒷면 드래프트 ─")]
+    [Tooltip("각 드래프트 카드가 뒷면으로 제시될 확률(0~1). 뽑아서 패에 넣으면 앞면으로 공개")]
+    [Range(0f, 1f)] public float faceDownChance = 0.1f;
+
     void Update()
     {
         if (!_isDrafting || _isResolving) return;
+
+        // 온라인: 원격 드래프트 패킷 대기 중 — 너무 오래 안 오면 스킵 (데드락 방지)
+        if (_awaitingRemoteDraft)
+        {
+            _remoteDraftWait += Time.deltaTime;
+            if (_remoteDraftWait >= remoteDraftTimeout)
+            {
+                Debug.LogWarning("[CardDraft] 원격 드래프트 패킷 타임아웃 — 드래프트 스킵");
+                _awaitingRemoteDraft = false;
+                _isDrafting = false;
+            }
+            return;
+        }
 
         if (_waitingForPlayerClick)
         {
@@ -143,6 +172,9 @@ public class CardDraft : MonoBehaviour
         if (gameFlow == null || gameFlow.effectHover == null) return;
 
         if (hovered == _hoverBorderHost) return;  // 변동 없음
+
+        if (hovered != null && SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardHover);
 
         // 기존 부착 해제
         if (_hoverBorderFx != null)
@@ -232,9 +264,15 @@ public class CardDraft : MonoBehaviour
         Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
 
         if (IsOverCard(mouseWorld, _leftCard))
+        {
+            if (SoundManager.Instance != null) SoundManager.Instance.PlaySFX(SoundManager.Instance.uiClick);
             StartCoroutine(ResolvePick(chosen: _leftCard,  leftover: _rightCard, playerChose: true));
+        }
         else if (IsOverCard(mouseWorld, _rightCard))
+        {
+            if (SoundManager.Instance != null) SoundManager.Instance.PlaySFX(SoundManager.Instance.uiClick);
             StartCoroutine(ResolvePick(chosen: _rightCard, leftover: _leftCard,  playerChose: true));
+        }
     }
 
     // ─────────────────────────────────────────
@@ -260,6 +298,18 @@ public class CardDraft : MonoBehaviour
 
         bool playerTurn = mainFlow == null || mainFlow.IsPlayerTurn;
 
+        // 온라인 + 상대 턴: 로컬에서 카드를 생성/선택하지 않고 상대의 드래프트 패킷을 기다린다.
+        // (로컬 RNG/AI로 드래프트하면 양 클라이언트의 패가 어긋나므로 반드시 차단)
+        if (mainFlow != null && mainFlow.isOnlineMode && !playerTurn)
+        {
+            _isDrafting = true;
+            _isResolving = false;
+            _waitingForPlayerClick = false;
+            _awaitingRemoteDraft = true;
+            _remoteDraftWait = 0f;
+            return;
+        }
+
         Transform deckRefForScale;
         if (playerTurn)
             deckRefForScale = (deck.deckSpawnPoint != null) ? deck.deckSpawnPoint : deck.transform;
@@ -279,6 +329,9 @@ public class CardDraft : MonoBehaviour
         {
             // 둘 다 max → 드래프트 스킵
             Debug.Log("[CardDraft] 양쪽 손패 max — 드래프트 스킵");
+            // 온라인: 내 턴이면 상대에게 빈 드래프트를 보내 대기를 풀어준다 (데드락 방지)
+            if (mainFlow != null && mainFlow.isOnlineMode && playerTurn)
+                SendDraftResult(null, null, null, null, false, false);
             return;
         }
 
@@ -310,6 +363,7 @@ public class CardDraft : MonoBehaviour
         Vector3 midpointLocal = card1Anchor.InverseTransformPoint(midpointWorld);
         Vector3 finalLocalPos = new Vector3(midpointLocal.x, 0f, 0f);
 
+        MaybeFaceDownDraftCard(_leftCard);  // 확률적으로 뒷면 제시
         yield return StartCoroutine(AnimateCardDeal(_leftCard, card1Anchor, finalScale, finalLocalPos));
 
         _leftBaseScale = _leftCard.transform.localScale;
@@ -334,6 +388,9 @@ public class CardDraft : MonoBehaviour
 
         var cv = card != null ? card.GetComponent<CardValue>() : null;
 
+        // 온라인: 단일 카드 드래프트 결과 전송 (toPlayer면 내 패, 아니면 상대 패)
+        SendDraftResult(toPlayer ? cv : null, toPlayer ? null : cv, cv, null, false, true);
+
         // OPP로 가는 경우 카드 뒷면으로 비주얼 교체
         if (!toPlayer) OverlayBackOnCard(card);
 
@@ -343,6 +400,9 @@ public class CardDraft : MonoBehaviour
 
         if (card != null) Destroy(card);
         if (dest != null) SetCardAlpha(dest, 1f);
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
 
         _leftCard  = null;
         _rightCard = null;
@@ -357,11 +417,17 @@ public class CardDraft : MonoBehaviour
     {
         _leftCard = SpawnDraftCardAtAnchor(card1Anchor, deckRefForScale, out Vector3 c1FinalScale);
         if (_leftCard != null)
+        {
+            MaybeFaceDownDraftCard(_leftCard);  // 확률적으로 뒷면 제시
             yield return StartCoroutine(AnimateCardDeal(_leftCard, card1Anchor, c1FinalScale));
+        }
 
         _rightCard = SpawnDraftCardAtAnchor(card2Anchor, deckRefForScale, out Vector3 c2FinalScale);
         if (_rightCard != null)
+        {
+            MaybeFaceDownDraftCard(_rightCard);  // 확률적으로 뒷면 제시
             yield return StartCoroutine(AnimateCardDeal(_rightCard, card2Anchor, c2FinalScale));
+        }
 
         if (_leftCard == null || _rightCard == null)
         {
@@ -458,6 +524,9 @@ public class CardDraft : MonoBehaviour
             ? Quaternion.Inverse(targetAnchor.rotation)
             : Quaternion.identity;
 
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
+
         float duration = Mathf.Max(0.01f, dealDuration);
         float elapsed  = 0f;
 
@@ -492,7 +561,14 @@ public class CardDraft : MonoBehaviour
         float waitBefore = Mathf.Max(0f, totalDelay - reveal);
 
         if (waitBefore > 0f) yield return new WaitForSeconds(waitBefore);
+        
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardHover);
+            
         yield return StartCoroutine(OppRevealPick(pick, other, reveal));
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.uiClick);
 
         yield return StartCoroutine(
             ResolvePick(chosen: pick, leftover: other, playerChose: false));
@@ -577,6 +653,14 @@ public class CardDraft : MonoBehaviour
         var chosenCv   = chosen   != null ? chosen.GetComponent<CardValue>()   : null;
         var leftoverCv = leftover != null ? leftover.GetComponent<CardValue>() : null;
 
+        // 제시된 2장 정보 캐시 (left = _leftCard, right = _rightCard)
+        var leftCv  = _leftCard  != null ? _leftCard.GetComponent<CardValue>()  : null;
+        var rightCv = _rightCard != null ? _rightCard.GetComponent<CardValue>() : null;
+        bool choiceIsLeft = (chosen == _leftCard);
+
+        // 온라인: 내 턴 드래프트 결과 전송 (chosen=내 패, leftover=상대 패, 2장 정보 포함)
+        if (playerChose) SendDraftResult(chosenCv, leftoverCv, leftCv, rightCv, choiceIsLeft, false);
+
         // 2) OPP로 가는 카드는 카드 뒷면 비주얼로 교체 (Deck.cardBackPrefab 참조)
         if (!chosenToPlayer)   OverlayBackOnCard(chosen);
         if (!leftoverToPlayer) OverlayBackOnCard(leftover);
@@ -596,6 +680,9 @@ public class CardDraft : MonoBehaviour
         if (leftover != null) Destroy(leftover);
         if (chosenDest   != null) SetCardAlpha(chosenDest,   1f);
         if (leftoverDest != null) SetCardAlpha(leftoverDest, 1f);
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
 
         _leftCard  = null;
         _rightCard = null;
@@ -686,9 +773,21 @@ public class CardDraft : MonoBehaviour
     //  카드 비주얼을 카드 뒷면으로 교체 (자식 모든 SpriteRenderer 비활성 + back 자식 부착)
     //  deck.cardBackPrefab을 참조. 위치/스케일/회전은 부모(드래프트 카드)가 그대로 유지.
     // ─────────────────────────────────────────
+    // 확률(faceDownChance)에 따라 드래프트 카드를 뒷면으로 제시.
+    // 패에 들어갈 땐 목적지 카드(새 앞면)로 자연스럽게 공개된다.
+    private void MaybeFaceDownDraftCard(GameObject card)
+    {
+        if (card == null) return;
+        if (Random.value < faceDownChance)
+            OverlayBackOnCard(card);
+    }
+
     private void OverlayBackOnCard(GameObject card)
     {
         if (card == null) return;
+        // 이미 뒷면이면 중복 적용 방지 (제시 단계 뒷면 + 상대 전달 뒷면 충돌 차단)
+        if (card.transform.Find("DraftBackOverlay") != null) return;
+
         GameObject backPrefab = deck != null ? deck.cardBackPrefab : null;
         if (backPrefab == null) return;
 
@@ -698,6 +797,7 @@ public class CardDraft : MonoBehaviour
 
         // 2) 카드 뒷면 자식으로 부착
         GameObject back = Instantiate(backPrefab, card.transform);
+        back.name = "DraftBackOverlay";
         back.transform.localPosition = Vector3.zero;
         back.transform.localRotation = Quaternion.identity;
         back.transform.localScale    = Vector3.one;
@@ -723,6 +823,287 @@ public class CardDraft : MonoBehaviour
             c.a = alpha;
             sr.color = c;
         }
+    }
+
+    // ─────────────────────────────────────────
+    //  온라인 드래프트 동기화
+    // ─────────────────────────────────────────
+    // 내 턴 드래프트 결과를 상대에게 전송.
+    // me=내 패로 간 카드, opp=상대 패로 간 카드 (null=없음)
+    // leftCv/rightCv=제시된 2장, choiceIsLeft=왼쪽 선택 여부
+    private void SendDraftResult(CardValue meCard, CardValue oppCard,
+        CardValue leftCv, CardValue rightCv, bool choiceIsLeft, bool isSingleCard)
+    {
+        if (mainFlow == null || !mainFlow.isOnlineMode || !mainFlow.IsPlayerTurn) return;
+        if (NetworkManager.Instance == null) return;
+
+        NetworkManager.Instance.SendDraft(
+            meCard  != null, meCard  != null ? meCard.value  : 0,
+            meCard  != null ? meCard.cardType  : CardType.Attack, meCard  != null && meCard.isJoker,
+            oppCard != null, oppCard != null ? oppCard.value : 0,
+            oppCard != null ? oppCard.cardType : CardType.Attack, oppCard != null && oppCard.isJoker,
+            // 제시 2장 정보
+            leftCv  != null, leftCv  != null ? leftCv.value  : 0,
+            leftCv  != null ? leftCv.cardType  : CardType.Attack, leftCv  != null && leftCv.isJoker,
+            rightCv != null, rightCv != null ? rightCv.value : 0,
+            rightCv != null ? rightCv.cardType : CardType.Attack, rightCv != null && rightCv.isJoker,
+            choiceIsLeft, isSingleCard);
+    }
+
+    // ─────────────────────────────────────────
+    //  상대(턴 플레이어)의 드래프트 결과를 받아 시각 연출과 함께 반영
+    //  MainFlow 폴링에서 호출
+    // ─────────────────────────────────────────
+    public void ApplyRemoteDraft(DraftData d)
+    {
+        _awaitingRemoteDraft = false;
+        StartCoroutine(RemoteDraftRoutine(d));
+    }
+
+    private IEnumerator RemoteDraftRoutine(DraftData d)
+    {
+        _isResolving = true;
+
+        // 양쪽 손패 max로 스킵된 경우 → 데이터만 적용
+        if (!d.hasMe && !d.hasOpp && !d.hasLeft && !d.hasRight)
+        {
+            _isResolving = false;
+            _isDrafting = false;
+            yield break;
+        }
+
+        // 시각 연출이 가능한 경우 (제시 2장 정보가 있을 때)
+        if (d.hasLeft && d.hasRight && !d.isSingleCard)
+        {
+            // ── 상대 턴 2장 드래프트 시각 연출 ──
+            Transform deckRefForScale = (oppDeck != null && oppDeck.deckSpawnPoint != null)
+                ? oppDeck.deckSpawnPoint
+                : (oppDeck != null ? oppDeck.transform : deck.transform);
+
+            // 1) 카드 2장 스폰 + 딜 애니메이션
+            _leftCard = SpawnRemoteDraftCard(card1Anchor, deckRefForScale,
+                d.leftV, d.leftType, d.leftJoker, out Vector3 c1FinalScale);
+            if (_leftCard != null)
+            {
+                MaybeFaceDownDraftCard(_leftCard);  // 확률적으로 뒷면 제시 (연출용)
+                yield return StartCoroutine(AnimateCardDeal(_leftCard, card1Anchor, c1FinalScale));
+            }
+
+            _rightCard = SpawnRemoteDraftCard(card2Anchor, deckRefForScale,
+                d.rightV, d.rightType, d.rightJoker, out Vector3 c2FinalScale);
+            if (_rightCard != null)
+            {
+                MaybeFaceDownDraftCard(_rightCard);  // 확률적으로 뒷면 제시 (연출용)
+                yield return StartCoroutine(AnimateCardDeal(_rightCard, card2Anchor, c2FinalScale));
+            }
+
+            if (_leftCard == null || _rightCard == null)
+            {
+                // 스폰 실패 시 데이터만 적용하고 종료
+                CleanupDraftCards();
+                ApplyRemoteDraftData(d);
+                _isResolving = false;
+                _isDrafting = false;
+                yield break;
+            }
+
+            _leftBaseScale  = _leftCard.transform.localScale;
+            _rightBaseScale = _rightCard.transform.localScale;
+
+            // 2) 상대가 선택한 카드를 호버 연출로 보여주기
+            GameObject pick  = d.choiceIsLeft ? _leftCard : _rightCard;
+            GameObject other = d.choiceIsLeft ? _rightCard : _leftCard;
+
+            float totalDelay = Random.Range(oppPickDelayMin, oppPickDelayMax);
+            float reveal     = Mathf.Clamp(oppDecisionRevealTime, 0f, totalDelay);
+            float waitBefore = Mathf.Max(0f, totalDelay - reveal);
+
+            if (waitBefore > 0f) yield return new WaitForSeconds(waitBefore);
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.cardHover);
+
+            yield return StartCoroutine(OppRevealPick(pick, other, reveal));
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.uiClick);
+
+            // 3) 카드 비행: 상대가 고른 카드 → 상대 패(oppDeck), 남은 카드 → 내 패(deck)
+            // chosen(상대가 선택) → oppDeck (뒷면으로), leftover → deck (앞면으로)
+            DetachHoverBorder();
+            if (pick  != null) pick.transform.localScale  = (pick  == _leftCard) ? _leftBaseScale : _rightBaseScale;
+            if (other != null) other.transform.localScale = (other == _leftCard) ? _leftBaseScale : _rightBaseScale;
+
+            // 상대 패로 가는 카드(pick)는 뒷면 교체
+            OverlayBackOnCard(pick);
+
+            // 데이터 적용 + 투명 목적지 카드 생성
+            var pickCv  = pick  != null ? pick.GetComponent<CardValue>()  : null;
+            var otherCv = other != null ? other.GetComponent<CardValue>() : null;
+
+            // pick → 상대 패 (oppDeck)
+            GameObject pickDest = null;
+            if (d.hasMe && oppDeck != null)
+            {
+                oppDeck.AddCardByValue(d.meV, d.meType);
+                var hand = oppDeck.SpawnedCards;
+                if (hand != null && hand.Count > 0)
+                {
+                    pickDest = hand[hand.Count - 1];
+                    SetCardAlpha(pickDest, 0f);
+                }
+            }
+
+            // other → 내 패 (deck)
+            GameObject otherDest = null;
+            if (d.hasOpp && deck != null)
+            {
+                if (d.oppJoker) deck.AddJokerCard(d.oppType);
+                else            deck.AddCardByValue(d.oppV, d.oppType);
+                var hand = deck.SpawnedCards;
+                if (hand != null && hand.Count > 0)
+                {
+                    otherDest = hand[hand.Count - 1];
+                    SetCardAlpha(otherDest, 0f);
+                }
+            }
+
+            // 비행 애니메이션
+            Coroutine cA = StartCoroutine(FlyToTarget(pick,  pickDest));
+            Coroutine cB = StartCoroutine(FlyToTarget(other, otherDest));
+            yield return cA;
+            yield return cB;
+
+            // 정리
+            if (pick  != null) Destroy(pick);
+            if (other != null) Destroy(other);
+            if (pickDest  != null) SetCardAlpha(pickDest,  1f);
+            if (otherDest != null) SetCardAlpha(otherDest, 1f);
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
+        }
+        else
+        {
+            // 제시 2장 정보가 없거나 단일 카드 → 기존 방식 (데이터만 적용 + 사운드)
+            ApplyRemoteDraftData(d);
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
+        }
+
+        _leftCard  = null;
+        _rightCard = null;
+        _isResolving = false;
+        _isDrafting  = false;
+    }
+
+    // 제시 2장 정보 없이 데이터만 적용하는 fallback
+    private void ApplyRemoteDraftData(DraftData d)
+    {
+        if (d.hasMe && oppDeck != null)
+            oppDeck.AddCardByValue(d.meV, d.meType);
+
+        if (d.hasOpp && deck != null)
+        {
+            if (d.oppJoker) deck.AddJokerCard(d.oppType);
+            else            deck.AddCardByValue(d.oppV, d.oppType);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  상대 턴 드래프트 시각 연출용 카드 스폰
+    //  (로컬 RNG를 쓰지 않고, 패킷에서 받은 값/타입으로 프리팹을 찾아 생성)
+    // ─────────────────────────────────────────
+    private GameObject SpawnRemoteDraftCard(Transform targetAnchor, Transform deckRefForScale,
+        int value, CardType cardType, bool isJoker, out Vector3 finalLocalScale)
+    {
+        finalLocalScale = Vector3.one;
+
+        // 프리팹 찾기: 해당 value/type에 맞는 프리팹을 덱 풀에서 검색
+        GameObject prefab = null;
+        if (deck != null)
+        {
+            if (isJoker)
+            {
+                deck.GetRandomPrefabFromActivePool(out prefab, out _, out _, out _);
+                // 조커는 풀에서 아무거나 가져와도 CardValue로 덮어씌우므로 OK
+                // 하지만 정확한 조커 프리팹을 찾아보자
+                deck.GetRandomPrefabFromActivePool(out GameObject jpf, out int jv, out bool jk, out CardType jct);
+                // 조커 전용 프리팹이 있으면 사용
+                foreach (var g in deck.deckGroups)
+                {
+                    if (g == null || !g.isActive || g.cards == null) continue;
+                    if (g.cards.Length >= 7 && g.cards[6] != null && g.cards[6].prefab != null)
+                    { prefab = g.cards[6].prefab; break; }
+                }
+            }
+            else
+            {
+                // value + cardType 매칭
+                foreach (var g in deck.deckGroups)
+                {
+                    if (g == null || !g.isActive || g.cards == null) continue;
+                    if (g.groupType != cardType) continue;
+                    int idx = value - 1;
+                    if (idx >= 0 && idx < g.cards.Length && g.cards[idx] != null && g.cards[idx].prefab != null)
+                    { prefab = g.cards[idx].prefab; break; }
+                }
+                // type 불일치 fallback: value만 매칭
+                if (prefab == null)
+                {
+                    foreach (var g in deck.deckGroups)
+                    {
+                        if (g == null || !g.isActive || g.cards == null) continue;
+                        int idx = value - 1;
+                        if (idx >= 0 && idx < g.cards.Length && g.cards[idx] != null && g.cards[idx].prefab != null)
+                        { prefab = g.cards[idx].prefab; break; }
+                    }
+                }
+            }
+        }
+
+        if (prefab == null) return null;
+
+        // 카드 instantiate (SpawnDraftCardAtAnchor와 동일 패턴)
+        GameObject card = Instantiate(prefab, targetAnchor);
+
+        Vector3 deckLossy   = deckRefForScale != null ? deckRefForScale.lossyScale : Vector3.one;
+        Vector3 anchorLossy = targetAnchor.lossyScale;
+        Vector3 prefabScale = prefab.transform.localScale;
+        finalLocalScale = new Vector3(
+            prefabScale.x * Mathf.Abs(deckLossy.x) / Mathf.Max(Mathf.Abs(anchorLossy.x), 0.0001f) * cardScale,
+            prefabScale.y * Mathf.Abs(deckLossy.y) / Mathf.Max(Mathf.Abs(anchorLossy.y), 0.0001f) * cardScale,
+            prefabScale.z);
+
+        if (deckAnchor != null)
+        {
+            card.transform.position = deckAnchor.position;
+            card.transform.rotation = deckAnchor.rotation;
+        }
+        else
+        {
+            card.transform.localPosition = Vector3.zero;
+            card.transform.localRotation = Quaternion.identity;
+        }
+        card.transform.localScale = finalLocalScale * Mathf.Max(0.01f, deckInitialScaleMul);
+
+        var cv = card.GetComponent<CardValue>();
+        if (cv == null) cv = card.AddComponent<CardValue>();
+        cv.value    = value;
+        cv.isJoker  = isJoker;
+        cv.cardType = cardType;
+
+        var hover = card.GetComponent<CardHover>();
+        if (hover != null) hover.enabled = false;
+
+        if (card.GetComponent<Collider2D>() == null)
+            card.AddComponent<BoxCollider2D>();
+
+        foreach (var sr in card.GetComponentsInChildren<SpriteRenderer>())
+            sr.sortingOrder = cardSortingOrder;
+
+        return card;
     }
 
     private void CleanupDraftCards()

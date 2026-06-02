@@ -28,7 +28,12 @@ public class CardHover : MonoBehaviour
         ApplySortingOrder(baseSortingOrder);
     }
 
-    public void Hover() => _isHovered = true;
+    public void Hover()
+    {
+        if (!_isHovered && SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardHover);
+        _isHovered = true;
+    }
     public void Unhover() => _isHovered = false;
 
     public void StartDrag() => _isDragging = true;

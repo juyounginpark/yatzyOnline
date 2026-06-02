@@ -52,7 +52,23 @@ public class OnlineOpponent : MonoBehaviour
 
         var card = SpawnCard(value, type, isJoker, faceDown: true);
         if (card != null)
+        {
             StartCoroutine(AnimatePlace(card, slot, null));
+        }
+        else
+        {
+            // 비주얼 프리팹이 없어도 슬롯이 비지 않게 최소 카드 생성 (DoTurnEnd와 동일 패턴)
+            Debug.LogWarning($"[OppOnline] HandleCardPlaced: SpawnCard null — 최소 카드로 fallback (slot:{slotIndex})");
+            var fallback = new GameObject("OppCard_" + slotIndex);
+            var cv = fallback.AddComponent<CardValue>();
+            cv.value    = value;
+            cv.cardType = type;
+            cv.isJoker  = isJoker;
+            slot.PlaceCardRaw(fallback);
+        }
+
+        // 손패 개수 동기화: 상대가 카드를 냈으니 상대 손패(oppDeck)에서 1장 제거
+        if (oppDeck != null) oppDeck.RemoveOneCard();
     }
 
     // ─────────────────────────────────────────
@@ -61,24 +77,32 @@ public class OnlineOpponent : MonoBehaviour
     public void HandleCardReturned(int slotIndex)
     {
         if (OppSlots == null || slotIndex < 0 || slotIndex >= OppSlots.Length) return;
-        OppSlots[slotIndex]?.ClearCard();
+        var slot = OppSlots[slotIndex];
+        if (slot == null) return;
+
+        bool had = slot.HasCard;
+        slot.ClearCard();
+
+        // 손패 개수 동기화: 상대가 카드를 패로 회수했으니 상대 손패(oppDeck)에 1장 복원 (뒷면)
+        if (had && oppDeck != null) oppDeck.AddCardByValue(1, CardType.Attack);
     }
 
     // ─────────────────────────────────────────
     //  상대 턴 종료 처리
     //  MainFlow.Update()에서 직접 호출 — 이 컴포넌트가 코루틴 소유
     // ─────────────────────────────────────────
-    public void HandleTurnEnd(SlotCardData[] slots)
+    public void HandleTurnEnd(SlotCardData[] slots, bool fieldGuard = false)
     {
-        StartCoroutine(DoTurnEnd(slots));
+        StartCoroutine(DoTurnEnd(slots, fieldGuard));
     }
 
-    private IEnumerator DoTurnEnd(SlotCardData[] slots)
+    private IEnumerator DoTurnEnd(SlotCardData[] slots, bool fieldGuard)
     {
-        Debug.Log($"[OppOnline] DoTurnEnd 시작 — 슬롯 수:{slots?.Length ?? 0}");
+        Debug.Log($"[OppOnline] DoTurnEnd 시작 — 슬롯 수:{slots?.Length ?? 0}, Guard:{fieldGuard}");
         _animating = true;
 
-        var toFlip = new List<GameObject>();
+        var toFlip     = new List<GameObject>();
+        var placedSlots = new List<Slot>();
 
         // 1) 슬롯 채우기
         foreach (var data in slots)
@@ -98,7 +122,10 @@ public class OnlineOpponent : MonoBehaviour
                     cv.cardType = (CardType)data.cardType;
                     cv.isJoker  = data.isJoker;
                 }
-                toFlip.Add(slot.GetPlacedCard());
+                // Guard 카드(잔류 또는 이번에 Guard로 갈 카드)는 뒤집지 않음
+                if (!slot.IsGuard && !fieldGuard)
+                    toFlip.Add(slot.GetPlacedCard());
+                placedSlots.Add(slot);
             }
             else
             {
@@ -119,12 +146,20 @@ public class OnlineOpponent : MonoBehaviour
                     yield return StartCoroutine(AnimatePlace(card, slot, null));
                     yield return new WaitForSeconds(0.1f);
                 }
+                // 실시간 배치 패킷 없이 이번에 처음 배치된 카드 → 손패 1장 차감 (동기화)
+                if (oppDeck != null) oppDeck.RemoveOneCard();
                 toFlip.Add(card);
+                placedSlots.Add(slot);
             }
         }
 
-        // 2) 앞면 공개
-        if (toFlip.Count > 0)
+        // 2) Guard면 뒷면 유지(논리 상태만 Guard), 아니면 앞면 공개
+        if (fieldGuard)
+        {
+            foreach (var slot in placedSlots)
+                slot.MarkGuard(true);
+        }
+        else if (toFlip.Count > 0)
         {
             yield return new WaitForSeconds(0.2f);
             for (int i = 0; i < toFlip.Count; i++)
@@ -150,6 +185,19 @@ public class OnlineOpponent : MonoBehaviour
         {
             Debug.LogWarning($"[OppOnline] EndTurn 조건 불만족 IsPlayerTurn:{mainFlow?.IsPlayerTurn} IsTransitioning:{mainFlow?.IsTransitioning}");
         }
+    }
+
+    // ─────────────────────────────────────────
+    //  판정 시 상대 Guard 카드 공개 (뒷면 프리팹 → 앞면 스프라이트)
+    // ─────────────────────────────────────────
+    public IEnumerator RevealGuardCardRoutine(Slot slot)
+    {
+        if (slot == null) yield break;
+        var card = slot.GetPlacedCard();
+        if (card == null) { slot.MarkGuard(false); yield break; }
+
+        yield return StartCoroutine(FlipToFace(card));
+        slot.MarkGuard(false);
     }
 
     // ─────────────────────────────────────────
@@ -212,6 +260,10 @@ public class OnlineOpponent : MonoBehaviour
 
         card.transform.position = targetSlot.transform.position;
         card.transform.rotation = Quaternion.identity;
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardPlace);
+
         targetSlot.PlaceCard(card);
         onDone?.Invoke();
     }
@@ -250,6 +302,9 @@ public class OnlineOpponent : MonoBehaviour
             yield return null;
         }
         card.transform.localScale = orig;
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardFlip);
     }
 
     private void SwapSprite(GameObject card)
@@ -269,9 +324,18 @@ public class OnlineOpponent : MonoBehaviour
         var prefab = group.cards[cv.value - 1].prefab;
         if (prefab == null) return;
 
-        var prefabSr = prefab.GetComponent<SpriteRenderer>();
-        var sr = card.GetComponent<SpriteRenderer>();
+        // SpriteRenderer가 루트가 아닌 자식에 있을 수 있으므로 GetComponentInChildren로 탐색.
+        // (루트만 보면 스왑이 조용히 실패해 카드가 뒷면 그대로 남는 버그)
+        var prefabSr = prefab.GetComponentInChildren<SpriteRenderer>(true);
+        var sr       = card.GetComponentInChildren<SpriteRenderer>(true);
         if (prefabSr != null && sr != null)
-            sr.sprite = prefabSr.sprite;
+        {
+            sr.sprite  = prefabSr.sprite;
+            sr.enabled = true;  // 혹시 비활성화돼 있었다면 확실히 표시
+        }
+        else
+        {
+            Debug.LogWarning($"[OppOnline] SwapSprite 실패 — prefabSr:{prefabSr!=null} sr:{sr!=null} (value:{cv.value}, type:{cv.cardType})");
+        }
     }
 }

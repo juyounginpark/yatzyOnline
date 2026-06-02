@@ -6,12 +6,13 @@ using LitJson;
 // ─────────────────────────────────────────────
 public enum PacketType
 {
-    GameReady   = 0,
     TurnEnd     = 1,
     CardPlace   = 2,
     CardReturn  = 3,
     GameOver    = 4,
     Sync        = 5,
+    Draft       = 6,
+    Seed        = 7,
 }
 
 // ─────────────────────────────────────────────
@@ -23,6 +24,40 @@ public struct CardPlaceData
     public int slotIndex, value;
     public CardType cardType;
     public bool isJoker;
+}
+
+// ─────────────────────────────────────────────
+//  드래프트 결과 데이터 (턴 플레이어 → 상대 동기화)
+//  제시된 2장(left/right) 전체 정보 + 턴 플레이어가 어느 쪽을 골랐는지
+//  me  = 턴 플레이어가 자기 패로 가져간 카드
+//  opp = 상대(수신자) 패로 넘어가는 카드
+//  (hasMe·hasOpp 모두 false = 양쪽 손패 max로 스킵)
+//  hasLeft/hasRight: 제시된 2장이 있는지 (시각 연출용)
+//  choiceIsLeft: 턴 플레이어가 왼쪽을 선택했는지 (true=왼쪽, false=오른쪽)
+// ─────────────────────────────────────────────
+[Serializable]
+public struct DraftData
+{
+    public bool     hasMe;
+    public int      meV;
+    public CardType meType;
+    public bool     meJoker;
+    public bool     hasOpp;
+    public int      oppV;
+    public CardType oppType;
+    public bool     oppJoker;
+
+    // 제시된 2장 정보 (상대 턴 시각 연출용)
+    public bool     hasLeft;
+    public int      leftV;
+    public CardType leftType;
+    public bool     leftJoker;
+    public bool     hasRight;
+    public int      rightV;
+    public CardType rightType;
+    public bool     rightJoker;
+    public bool     choiceIsLeft;  // 턴 플레이어가 왼쪽(left)을 선택했는가?
+    public bool     isSingleCard;  // 단일 카드 드래프트인가? (한쪽 손패 max)
 }
 
 // ─────────────────────────────────────────────
@@ -46,27 +81,13 @@ public struct SlotCardData
 // ─────────────────────────────────────────────
 public static class GamePacket
 {
-    // ── GameReady ──
-    public static string MakeGameReady(bool receiverGoesFirst)
-    {
-        var j = new JsonData();
-        j["t"]     = (int)PacketType.GameReady;
-        j["first"] = receiverGoesFirst ? 1 : 0;
-        return JsonMapper.ToJson(j);
-    }
-
-    public static bool ParseGameReady(JsonData j, out bool receiverGoesFirst)
-    {
-        receiverGoesFirst = (int)j["first"] == 1;
-        return true;
-    }
-
     // ── TurnEnd ──
-    public static string MakeTurnEnd(SlotCardData[] slots, int[] chainLockIndices = null,
-        float senderHp = -1f, float receiverHp = -1f)
+    public static string MakeTurnEnd(SlotCardData[] slots,
+        float senderHp = -1f, float receiverHp = -1f, bool fieldGuard = false)
     {
         var j = new JsonData();
         j["t"]     = (int)PacketType.TurnEnd;
+        j["g"]     = fieldGuard ? 1 : 0;   // 보내는 쪽 필드가 통째로 Guard(뒷면)인지
         j["slots"] = new JsonData();
         j["slots"].SetJsonType(JsonType.Array);
 
@@ -81,27 +102,18 @@ public static class GamePacket
             j["slots"].Add(entry);
         }
 
-        // 체인 잠금 대상 슬롯 인덱스
-        if (chainLockIndices != null && chainLockIndices.Length > 0)
-        {
-            j["cl"] = new JsonData();
-            j["cl"].SetJsonType(JsonType.Array);
-            foreach (int idx in chainLockIndices)
-                j["cl"].Add(idx);
-        }
-
-        // HP 동기화
-        if (senderHp >= 0f)   j["shp"] = (int)senderHp;
-        if (receiverHp >= 0f) j["rhp"] = (int)receiverHp;
+        // HP 동기화 (10배 스케일링으로 소수점 1자리 보존)
+        if (senderHp >= 0f)   j["shp"] = (int)(senderHp * 10f);
+        if (receiverHp >= 0f) j["rhp"] = (int)(receiverHp * 10f);
 
         return JsonMapper.ToJson(j);
     }
 
-    /// <summary>HP 값 파싱 — senderHp, receiverHp (없으면 -1)</summary>
+    /// <summary>HP 값 파싱 — senderHp, receiverHp (없으면 -1). 10배 스케일링 복원.</summary>
     public static void ParseHp(JsonData j, out float senderHp, out float receiverHp)
     {
-        senderHp   = j.Keys.Contains("shp") ? (float)(int)j["shp"] : -1f;
-        receiverHp = j.Keys.Contains("rhp") ? (float)(int)j["rhp"] : -1f;
+        senderHp   = j.Keys.Contains("shp") ? (int)j["shp"] / 10f : -1f;
+        receiverHp = j.Keys.Contains("rhp") ? (int)j["rhp"] / 10f : -1f;
     }
 
     public static SlotCardData[] ParseTurnEnd(JsonData j)
@@ -122,14 +134,10 @@ public static class GamePacket
         return result;
     }
 
-    public static int[] ParseChainLockIndices(JsonData j)
+    /// <summary>보내는 쪽 필드 Guard 여부 (없으면 false)</summary>
+    public static bool ParseFieldGuard(JsonData j)
     {
-        if (!j.Keys.Contains("cl")) return null;
-        var arr = j["cl"];
-        var result = new int[arr.Count];
-        for (int i = 0; i < arr.Count; i++)
-            result[i] = (int)arr[i];
-        return result;
+        return j.Keys.Contains("g") && (int)j["g"] == 1;
     }
 
     // ── CardPlace ──
@@ -178,16 +186,79 @@ public static class GamePacket
         var j = new JsonData();
         j["t"]   = (int)PacketType.Sync;
         j["tm"]  = (int)(timer * 100f);   // 0.01초 단위
-        j["shp"] = (int)senderHp;
-        j["rhp"] = (int)receiverHp;
+        j["shp"] = (int)(senderHp * 10f); // 10배 스케일링 (소수점 1자리)
+        j["rhp"] = (int)(receiverHp * 10f);
         return JsonMapper.ToJson(j);
     }
 
     public static void ParseSync(JsonData j, out float timer, out float senderHp, out float receiverHp)
     {
         timer      = (int)j["tm"] / 100f;
-        senderHp   = (float)(int)j["shp"];
-        receiverHp = (float)(int)j["rhp"];
+        senderHp   = (int)j["shp"] / 10f;
+        receiverHp = (int)j["rhp"] / 10f;
+    }
+
+    // ── Draft (드래프트 결과 동기화 — 제시 2장 + 선택 방향 포함) ──
+    public static string MakeDraft(bool hasMe, int meV, int meType, bool meJoker,
+                                   bool hasOpp, int oppV, int oppType, bool oppJoker,
+                                   bool hasLeft, int leftV, int leftType, bool leftJoker,
+                                   bool hasRight, int rightV, int rightType, bool rightJoker,
+                                   bool choiceIsLeft, bool isSingleCard = false)
+    {
+        var j = new JsonData();
+        j["t"]  = (int)PacketType.Draft;
+        j["hm"] = hasMe ? 1 : 0;
+        j["mv"] = meV;  j["mct"] = meType;  j["mj"] = meJoker ? 1 : 0;
+        j["ho"] = hasOpp ? 1 : 0;
+        j["ov"] = oppV; j["oct"] = oppType; j["oj"] = oppJoker ? 1 : 0;
+        // 제시 2장 정보 (상대 클라이언트 시각 연출용)
+        j["hl"] = hasLeft ? 1 : 0;
+        j["lv"] = leftV;  j["lct"] = leftType;  j["lj"] = leftJoker ? 1 : 0;
+        j["hr"] = hasRight ? 1 : 0;
+        j["rv"] = rightV; j["rct"] = rightType; j["rj"] = rightJoker ? 1 : 0;
+        j["cl"] = choiceIsLeft ? 1 : 0;
+        j["sc"] = isSingleCard ? 1 : 0;
+        return JsonMapper.ToJson(j);
+    }
+
+    public static DraftData ParseDraft(JsonData j)
+    {
+        return new DraftData
+        {
+            hasMe    = (int)j["hm"] == 1,
+            meV      = (int)j["mv"],
+            meType   = (CardType)(int)j["mct"],
+            meJoker  = (int)j["mj"] == 1,
+            hasOpp   = (int)j["ho"] == 1,
+            oppV     = (int)j["ov"],
+            oppType  = (CardType)(int)j["oct"],
+            oppJoker = (int)j["oj"] == 1,
+            // 제시 2장 정보
+            hasLeft     = j.Keys.Contains("hl") && (int)j["hl"] == 1,
+            leftV       = j.Keys.Contains("lv")  ? (int)j["lv"]  : 0,
+            leftType    = j.Keys.Contains("lct") ? (CardType)(int)j["lct"] : CardType.Attack,
+            leftJoker   = j.Keys.Contains("lj")  && (int)j["lj"] == 1,
+            hasRight    = j.Keys.Contains("hr") && (int)j["hr"] == 1,
+            rightV      = j.Keys.Contains("rv")  ? (int)j["rv"]  : 0,
+            rightType   = j.Keys.Contains("rct") ? (CardType)(int)j["rct"] : CardType.Attack,
+            rightJoker  = j.Keys.Contains("rj")  && (int)j["rj"] == 1,
+            choiceIsLeft = j.Keys.Contains("cl") && (int)j["cl"] == 1,
+            isSingleCard = j.Keys.Contains("sc") && (int)j["sc"] == 1,
+        };
+    }
+
+    // ── Seed (초기 카드 뽑기 RNG 동기화) ──
+    public static string MakeSeed(int seed)
+    {
+        var j = new JsonData();
+        j["t"] = (int)PacketType.Seed;
+        j["s"] = seed;
+        return JsonMapper.ToJson(j);
+    }
+
+    public static int ParseSeed(JsonData j)
+    {
+        return (int)j["s"];
     }
 
     // ── 수신 파싱 ──

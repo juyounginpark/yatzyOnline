@@ -16,6 +16,7 @@ public class MatchmakingUI : MonoBehaviour
     // ─── 런타임 생성 UI 참조 ───
     private TMP_Text _statusText;
     private Button   _findMatchButton;
+    private Button   _aiButton;
     private Button   _cancelButton;
     private TMP_Text _findMatchLabel;
 
@@ -32,6 +33,7 @@ public class MatchmakingUI : MonoBehaviour
         _cancelButton.gameObject.SetActive(false);
 
         _findMatchButton.onClick.AddListener(OnFindMatch);
+        _aiButton.onClick.AddListener(OnAIMode);
         _cancelButton.onClick.AddListener(OnCancel);
 
         if (NetworkManager.Instance == null)
@@ -95,6 +97,18 @@ public class MatchmakingUI : MonoBehaviour
         _cancelButton.gameObject.SetActive(false);
     }
 
+    // AI 모드: 매칭 없이 Game 씬으로 바로 진입.
+    // MainFlow는 NetworkManager.State가 InGame이 아니면 자동으로 오프라인(AI) 모드로 동작한다.
+    private void OnAIMode()
+    {
+        // 진행 중인 온라인 매칭이 있으면 먼저 취소
+        if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.Matching)
+            NetworkManager.Instance.CancelMatch();
+
+        SetStatus("Starting AI match...");
+        SceneManager.LoadScene(gameSceneName);
+    }
+
     private void OnMatchFound()
     {
         SetStatus("Match found! Preparing game...");
@@ -151,11 +165,16 @@ public class MatchmakingUI : MonoBehaviour
         Rect(status, 0f, 0.56f, 0.85f, 0.08f);
         _statusText = status.GetComponent<TMP_Text>();
 
-        // ── 매치 찾기 버튼 ──
+        // ── 매치 찾기 버튼 (좌측) ──
         _findMatchButton = MakeButton(panel, "FindMatchBtn", "Find Match",
             new Color(0.2f, 0.6f, 1f), new Color(0.15f, 0.45f, 0.8f));
-        Rect(_findMatchButton.gameObject, 0f, 0.40f, 0.55f, 0.09f);
+        Rect(_findMatchButton.gameObject, -0.13f, 0.40f, 0.44f, 0.09f);
         _findMatchLabel = _findMatchButton.GetComponentInChildren<TMP_Text>();
+
+        // ── AI 대전 버튼 (우측) — 매칭 없이 오프라인 AI 모드로 진입 ──
+        _aiButton = MakeButton(panel, "AIBtn", "AI",
+            new Color(0.3f, 0.7f, 0.4f), new Color(0.22f, 0.55f, 0.3f));
+        Rect(_aiButton.gameObject, 0.28f, 0.40f, 0.26f, 0.09f);
 
         // ── 취소 버튼 ──
         _cancelButton = MakeButton(panel, "CancelBtn", "Cancel",

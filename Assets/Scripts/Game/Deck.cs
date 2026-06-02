@@ -101,6 +101,8 @@ public class Deck : MonoBehaviour
 
         var mainFlow = FindObjectOfType<MainFlow>();
         if (mainFlow != null && mainFlow.IsTransitioning) return;
+        // 상대 턴에는 카드 배치/드래그 등 상호작용 차단
+        if (mainFlow != null && !mainFlow.IsPlayerTurn) return;
 
         UpdateHoverAndDrag();
     }
@@ -128,6 +130,9 @@ public class Deck : MonoBehaviour
 
                 if (slot != null && !slot.HasCard && !slot.IsChainLocked)
                 {
+                    if (SoundManager.Instance != null)
+                        SoundManager.Instance.PlaySFX(SoundManager.Instance.cardPlace);
+
                     var cv = _draggingCard.GetComponent<CardValue>();
                     GameObject cardObj = _draggingCard.gameObject;
                     _spawnedCards.Remove(cardObj);
@@ -135,10 +140,14 @@ public class Deck : MonoBehaviour
                     UpdateAllCardBases();
                     TriggerWaveAll(null);
 
+                    var mf = FindObjectOfType<MainFlow>();
+
+                    // 필드가 Guard 상태면 새로 놓인 카드도 뒷면으로 맞춘다
+                    if (mf != null) mf.OnPlayerCardPlaced(slot);
+
                     // 온라인: 상대에게 카드 배치 알림
                     if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
                     {
-                        var mf = FindObjectOfType<MainFlow>();
                         if (mf != null && mf.isOnlineMode && mf.playerSlots != null && cv != null)
                         {
                             int idx = System.Array.IndexOf(mf.playerSlots, slot);
@@ -299,6 +308,24 @@ public class Deck : MonoBehaviour
         StartCoroutine(DealAnimation());
     }
 
+    /// <summary>온라인용: 동일한 seed로 결정적 카드 뽑기 (양쪽 클라이언트 동일 손패 보장)</summary>
+    public void DrawCards(int seed)
+    {
+        ClearCards();
+
+        if (_prefabPool == null)
+            _prefabPool = BuildPrefabPool();
+
+        if (_prefabPool.Count == 0)
+        {
+            Debug.LogWarning("[Deck] 유효한 카드 프리팹이 없습니다.");
+            return;
+        }
+
+        var rng = new System.Random(seed);
+        StartCoroutine(DealAnimation(rng));
+    }
+
     // ─────────────────────────────────────────
     //  스페이스바: 카드 1장 추가 (최대 maxCards장)
     // ─────────────────────────────────────────
@@ -428,7 +455,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  딜 애니메이션: 한 장씩 생성하면서 쫘라락
     // ─────────────────────────────────────────
-    private IEnumerator DealAnimation()
+    private IEnumerator DealAnimation(System.Random rng = null)
     {
         _isAnimating = true;
         
@@ -439,9 +466,15 @@ public class Deck : MonoBehaviour
 
         for (int i = 0; i < drawCount; i++)
         {
-            // 한 장씩 생성
-            var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
+            // 카드 선택: rng가 주어지면 결정적, 아니면 UnityEngine.Random
+            int pickIdx = rng != null
+                ? rng.Next(_prefabPool.Count)
+                : UnityEngine.Random.Range(0, _prefabPool.Count);
+            var pick = _prefabPool[pickIdx];
             SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.cardType, pick.poolIndex, anchorPos);
+
+            if (SoundManager.Instance != null)
+                SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
 
             // 현재까지 생성된 전체 카드 재배치
             int count = _spawnedCards.Count;

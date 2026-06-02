@@ -23,6 +23,15 @@ public class OppAuto : MonoBehaviour
     [Tooltip("카드 간 플립 딜레이")]
     public float flipStagger = 0.1f;
 
+    [Header("─ 방어(Guard) ─")]
+    [Range(0f, 1f)]
+    [Tooltip("배치한 카드를 공개하지 않고 Guard(뒷면)로 둘 확률")]
+    public float guardChance = 0.35f;
+
+    [Header("─ 플레이 성향 ─")]
+    [Tooltip("항상 패에 최소로 보관할 카드 수 (이만큼은 내지 않음)")]
+    public int minReserve = 3;
+
     // ─── 내부 상태 ───
     private bool _acting;
     private bool _animating;   // 카드 배치/플립 애니메이션 중
@@ -48,6 +57,30 @@ public class OppAuto : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  플레이어 필드 상태 평가
+    // ─────────────────────────────────────────
+    private float EvaluatePlayerField(out bool pGuard, out int pCardsCount)
+    {
+        pGuard = false;
+        pCardsCount = 0;
+        if (mainFlow == null || mainFlow.playerSlots == null) return 0f;
+
+        List<int> vals = new List<int>();
+        foreach (var s in mainFlow.playerSlots)
+        {
+            if (s != null && s.HasVisibleCard)
+            {
+                var cv = s.GetCardValue();
+                if (cv != null) vals.Add(cv.value);
+                if (s.IsGuard) pGuard = true;
+                pCardsCount++;
+            }
+        }
+        string dummyRule;
+        return gameFlow.EvaluateHand(vals.ToArray(), out dummyRule);
+    }
+
+    // ─────────────────────────────────────────
     //  상대 턴 메인 코루틴
     //  전략: 순수 공격 / 순수 방어 / 혼합 (공격+방어)
     // ─────────────────────────────────────────
@@ -63,13 +96,62 @@ public class OppAuto : MonoBehaviour
             _acting = false;
             yield break;
         }
-        List<Placement> attackPlacements = new List<Placement>();
 
-        // ── 공격 카드 결정 ──
-        attackPlacements = FindComboPlacement();
+        // ── 플레이어 필드 분석 ──
+        bool pGuard;
+        int pCardsCount;
+        float pScore = EvaluatePlayerField(out pGuard, out pCardsCount);
+        bool pIsAttacking = (!pGuard && pScore > 0f);
 
-        // ── 1단계: 공격 카드 상태로 배치 ──
-        List<GameObject> attackCards = new List<GameObject>();
+        // ── AI 턴 스킵 판정 (전략적 대기 또는 압도적 유리) ──
+        bool strategicSkip = false;
+        if (mainFlow.hp != null)
+        {
+            float myHp = mainFlow.hp.OppHP;
+            float playerHp = mainFlow.hp.PlayerHP;
+            float advantage = myHp - playerHp;
+            
+            // 1) 압도적 유리 (HP 차이가 클 때 랜덤 스킵)
+            if (advantage > 100f)
+            {
+                float skipChance = Mathf.Clamp(advantage / 1000f, 0.1f, 0.5f);
+                if (Random.value < skipChance) strategicSkip = true;
+            }
+        }
+
+        // 2) 콤보 탐색 및 전략적 대기 (플레이어가 공격하지 않고 내 패가 별로일 때 턴 넘김)
+        List<Placement> attackPlacements = FindComboPlacement(forceMinCards: 0);
+        float myBestScore = (attackPlacements.Count > 0) ? attackPlacements[0].score : 0f;
+        
+        // 콤보 점수가 15 이하거나 하이카드 수준이고 플레이어가 날 치지 않으면 스킵!
+        if (!pIsAttacking && myBestScore <= 15f && oppDeck.SpawnedCards.Count < oppDeck.maxCards)
+        {
+            strategicSkip = true;
+        }
+
+        if (strategicSkip)
+        {
+            Debug.Log($"[OppAuto] AI가 전략적으로 턴을 스킵합니다. (Player Attacking: {pIsAttacking}, MyBestScore: {myBestScore})");
+            yield return new WaitForSeconds(0.5f);
+            if (!mainFlow.IsPlayerTurn && !mainFlow.IsTransitioning && !mainFlow.IsRouletteActive)
+                mainFlow.EndTurn();
+            _acting = false;
+            yield break;
+        }
+
+        // ── 강제 방어 판단 (플레이어 공격을 이길 수 없을 때) ──
+        bool mustGuard = false;
+        if (pIsAttacking && myBestScore < pScore)
+        {
+            mustGuard = true;
+            Debug.Log($"[OppAuto] 상대 공격({pScore})을 이길 수 없어 강제 수비합니다.");
+            // 수비할 때는 최소 2장으로 방어 (가능하다면)
+            attackPlacements = FindComboPlacement(forceMinCards: 2);
+        }
+
+        // ── 1단계: 카드 배치 ──
+        List<GameObject> placedCards = new List<GameObject>();
+        List<Slot>       placedSlots = new List<Slot>();
 
         _animating = true;  // 카드 애니메이션 시작 → 타이머 일시정지
 
@@ -82,18 +164,39 @@ public class OppAuto : MonoBehaviour
 
             // 배치 애니메이션 (끝까지 실행)
             yield return StartCoroutine(AnimatePlace(p.card, p.slot));
-            attackCards.Add(p.card);
+            placedCards.Add(p.card);
+            placedSlots.Add(p.slot);
 
             // 연속 배치 사이 짧은 대기
             if (i < attackPlacements.Count - 1)
                 yield return new WaitForSeconds(0.3f);
         }
 
-        // ── 2단계: 공격 카드 Y축 플립으로 앞면 공개 ──
-        if (attackCards.Count > 0)
+        // ── 2단계: 공격(공개) 또는 방어(뒷면 유지) 결정 ──
+        if (placedCards.Count > 0)
         {
             yield return new WaitForSeconds(0.3f);
-            yield return StartCoroutine(RevealAllCards(attackCards));
+
+            // 직전 라운드의 잔류 Guard가 있으면 필드 균일성을 위해 이번 턴도 Guard로 강제
+            bool hasExistingGuard = false;
+            foreach (var s in oppSlots)
+                if (s != null && s.HasCard && !s.IsChainLocked && s.IsGuard)
+                {
+                    hasExistingGuard = true;
+                    break;
+                }
+
+            bool useGuard = mustGuard || hasExistingGuard || Random.value < guardChance;
+            if (useGuard)
+            {
+                // 방어: 공개하지 않고 Guard 상태로 (뒷면 그대로) — 판정 때 공개
+                foreach (var sl in placedSlots)
+                    if (sl != null) sl.MarkGuard(true);
+            }
+            else
+            {
+                yield return StartCoroutine(RevealAllCards(placedCards));
+            }
         }
 
         _animating = false;  // 카드 애니메이션 종료 → 타이머 재개
@@ -121,7 +224,7 @@ public class OppAuto : MonoBehaviour
         public float score;
     }
 
-    private List<Placement> FindComboPlacement()
+    private List<Placement> FindComboPlacement(int forceMinCards = 0)
     {
         List<Placement> result = new List<Placement>();
         if (gameFlow == null || oppDeck == null) return result;
@@ -154,9 +257,14 @@ public class OppAuto : MonoBehaviour
 
         if (handIndices.Count == 0) return result;
 
-        int maxPlace = Mathf.Min(handIndices.Count, emptySlotIndices.Count);
+        // AI는 항상 최소 3장을 패에 보관 → 배치 가능 수를 (패 - 3)으로 제한
+        int reserveCap = handIndices.Count - minReserve;
+        if (reserveCap <= 0) return result;   // 보관 수 이하만 들고 있으면 아무 것도 내지 않음
 
-        // ── 전수 탐색: 콤보 등급 최고 → 카드 수 최소 → 점수 최고 ──
+        int maxPlace = Mathf.Min(handIndices.Count, emptySlotIndices.Count);
+        maxPlace = Mathf.Min(maxPlace, reserveCap);
+
+        // ── 전수 탐색: 콤보 등급 최고 → 점수 최고 → 카드 수 최소 ──
         int bestRank = -1;
         int bestCardCount = int.MaxValue;
         float bestScore = -1f;
@@ -165,7 +273,9 @@ public class OppAuto : MonoBehaviour
         int[] bestSlotSel = null;   // 선택된 빈 슬롯 인덱스 (emptySlotIndices 내 인덱스)
 
         // k장 배치 시도 (1장~maxPlace장)
-        for (int k = 1; k <= maxPlace; k++)
+        int minPlace = Mathf.Max(1, forceMinCards);
+        minPlace = Mathf.Min(minPlace, maxPlace); // 제한 초과 방지
+        for (int k = minPlace; k <= maxPlace; k++)
         {
             // 핸드에서 k장 선택하는 모든 조합
             foreach (var cardCombo in Combinations(handIndices.Count, k))
@@ -194,13 +304,13 @@ public class OppAuto : MonoBehaviour
 
                     int rank = ComboRank(rule);
 
-                    // 비교: 등급 높을수록 → 카드 적을수록 → 점수 높을수록
+                    // 비교: 등급 높을수록 → 점수 높을수록 → 카드 적을수록
                     bool isBetter = false;
                     if (rank > bestRank)
                         isBetter = true;
-                    else if (rank == bestRank && k < bestCardCount)
+                    else if (rank == bestRank && score > bestScore)
                         isBetter = true;
-                    else if (rank == bestRank && k == bestCardCount && score > bestScore)
+                    else if (rank == bestRank && score == bestScore && k < bestCardCount)
                         isBetter = true;
 
                     if (isBetter)
@@ -235,17 +345,24 @@ public class OppAuto : MonoBehaviour
             return result;
         }
 
-        // ── 콤보 없으면: 가장 높은 숫자 카드 1장만 ──
-        int highestIdx = 0;
-        for (int i = 1; i < handValues.Count; i++)
-            if (handValues[i] > handValues[highestIdx]) highestIdx = i;
+        // ── 콤보 없으면: 가장 높은 숫자 카드부터 채움 (forceMinCards 만족) ──
+        List<int> sortedHandIdx = new List<int>();
+        for (int i = 0; i < handValues.Count; i++) sortedHandIdx.Add(i);
+        sortedHandIdx.Sort((a, b) => handValues[b].CompareTo(handValues[a]));
 
-        result.Add(new Placement
+        int fillCount = Mathf.Max(1, forceMinCards);
+        fillCount = Mathf.Min(fillCount, emptySlotIndices.Count);
+        fillCount = Mathf.Min(fillCount, handIndices.Count);
+        
+        for (int i = 0; i < fillCount; i++)
         {
-            card = hand[handIndices[highestIdx]],
-            slot = oppSlots[emptySlotIndices[0]],
-            score = handValues[highestIdx]
-        });
+            result.Add(new Placement
+            {
+                card = hand[handIndices[sortedHandIdx[i]]],
+                slot = oppSlots[emptySlotIndices[i]],
+                score = handValues[sortedHandIdx[0]] // 최고 밸류 기준
+            });
+        }
 
         return result;
     }
@@ -378,6 +495,9 @@ public class OppAuto : MonoBehaviour
         card.transform.position = endPos;
         card.transform.rotation = Quaternion.identity;
 
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardPlace);
+
         targetSlot.PlaceCard(card);
     }
 
@@ -401,12 +521,27 @@ public class OppAuto : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  판정 시 AI Guard 카드 공개 (뒷면 → 앞면 스프라이트 스왑)
+    // ─────────────────────────────────────────
+    public IEnumerator RevealGuardCardRoutine(Slot slot, float customDuration = -1f)
+    {
+        if (slot == null) yield break;
+        var card = slot.GetPlacedCard();
+        if (card == null) { slot.MarkGuard(false); yield break; }
+
+        float dur = customDuration > 0f ? customDuration : flipDuration;
+        yield return StartCoroutine(FlipOneCard(card, dur));
+        slot.MarkGuard(false);
+    }
+
+    // ─────────────────────────────────────────
     //  Y축 플립: scale.x로 뒤집기 연출
     //  1→0 (닫기) → 스프라이트 교체 → 0→1 (열기)
     // ─────────────────────────────────────────
-    private IEnumerator FlipOneCard(GameObject card)
+    private IEnumerator FlipOneCard(GameObject card, float duration = -1f)
     {
-        float halfDuration = flipDuration * 0.5f;
+        float dur = duration > 0f ? duration : flipDuration;
+        float halfDuration = dur * 0.5f;
         Vector3 originalScale = card.transform.localScale;
 
         // ── 닫기: scale.x → 0 ──
@@ -444,6 +579,9 @@ public class OppAuto : MonoBehaviour
 
         // 최종 보정
         card.transform.localScale = originalScale;
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardFlip);
     }
 
     // ─────────────────────────────────────────

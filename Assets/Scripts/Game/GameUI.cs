@@ -49,8 +49,14 @@ public class GameUI : MonoBehaviour
 
         if (!isPlayerTurn)
         {
-            // 상대 턴: 상대 슬롯 조합 점수 표시 (최소 1초 딜레이)
+            // 상대가 방어(Guard) 상태면 점수를 숨김 — 뒷면 카드의 점수가 노출되지 않도록
+            bool oppGuarding = false;
             if (oppSlots != null)
+                foreach (var s in oppSlots)
+                    if (s != null && s.HasCard && s.IsGuard) { oppGuarding = true; break; }
+
+            // 상대 턴: 상대 슬롯 조합 점수 표시 (최소 1초 딜레이)
+            if (oppSlots != null && !oppGuarding)
             {
                 string oppRule;
                 float oppScore;
@@ -85,7 +91,10 @@ public class GameUI : MonoBehaviour
             }
             else
             {
+                // oppSlots 없음 또는 상대 방어 상태 → 숨김
                 scoreText.gameObject.SetActive(false);
+                _oppScoreDelay = 0f;
+                _oppScoreReady = false;
             }
         }
         else

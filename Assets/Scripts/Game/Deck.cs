@@ -14,21 +14,21 @@ public class CardEntry
 }
 
 // ─────────────────────────────────────────────
-//  이름을 붙일 수 있는 덱 그룹 (최대 7개 카드, 7번째는 조커)
+//  덱 그룹 (카드 8종 + 조커, 마지막 칸이 조커)
+//  인덱스 0~7 = 값 1~8, 마지막 인덱스 = 조커
 // ─────────────────────────────────────────────
 [Serializable]
 public class DeckGroup
 {
     public bool isActive = true;
     public string groupName = "New Group";
-    public CardType groupType = CardType.Attack;
 
-    [Tooltip("그룹에 넣을 프리팹 목록 (최대 7개, 7번째는 조커)")]
-    public CardEntry[] cards = new CardEntry[7];
+    [Tooltip("그룹에 넣을 프리팹 목록 (인덱스 0~7=값 1~8, 마지막 칸=조커)")]
+    public CardEntry[] cards = new CardEntry[9];
 }
 
 // ─────────────────────────────────────────────
-//  덱 매니저
+//  덱 매니저 (드로우 + 핸드 + 슬롯 배치)
 // ─────────────────────────────────────────────
 public class Deck : MonoBehaviour
 {
@@ -38,9 +38,20 @@ public class Deck : MonoBehaviour
     [Header("─ 카드 뒷면 ─")]
     public GameObject cardBackPrefab;
 
+    [Header("─ 상대 덱 참조 ─")]
+    [Tooltip("초기 분배 시 같은 덱 풀에서 상대에게도 카드를 나눠줌 (비워두면 자동 탐색)")]
+    public OppDeck oppDeck;
+
     [Header("─ 드로우 설정 ─")]
-    public int drawCount = 3;
+    [Tooltip("켜면 Start에서 자동 분배. 끄면 RoundDirector가 라운드마다 호출 (블러드 베팅 기본)")]
+    public bool autoDealOnStart = false;
+
+    [Tooltip("게임 시작 시 각 플레이어에게 나눠줄 장수")]
+    public int drawCount = 2;
     public int maxCards = 8;
+
+    [Tooltip("카드 종류별 덱 풀 보유 장수 (종류 9개 × 이 값 = 총 덱 장수)")]
+    public int copiesPerCard = 5;
 
     [Header("─ 스폰 위치 ─")]
     public Transform deckSpawnPoint;
@@ -65,8 +76,9 @@ public class Deck : MonoBehaviour
 
     // ─── 내부 상태 ───
     private readonly List<GameObject> _spawnedCards = new List<GameObject>();
-    private struct CardPool { public GameObject prefab; public int value; public bool isJoker; public CardType cardType; public int poolIndex; }
-    private List<CardPool> _prefabPool;
+    public struct CardPool { public GameObject prefab; public int value; public bool isJoker; public int poolIndex; }
+    private List<CardPool> _prefabPool;   // 카드 종류 정의 (9종, 복원용)
+    private List<CardPool> _drawPile;     // 공유 유한 덱 (45장, 비복원 — 셔플 후 끝에서 pop)
     private bool _isAnimating;
     private CardHover _currentHover;
     private CardHover _draggingCard;
@@ -88,22 +100,41 @@ public class Deck : MonoBehaviour
     void Start()
     {
         _prefabPool = BuildPrefabPool();
-        DrawCards();
+        if (oppDeck == null) oppDeck = FindObjectOfType<OppDeck>();
+        if (autoDealOnStart) DrawCards();
     }
 
-    private CardDraft _cardDraft;
+    /// <summary>덱 풀(45장)에서 카드 1장을 뽑아 제거. 풀이 비면 false.</summary>
+    public bool DrawFromPile(out CardPool card)
+    {
+        card = default;
+        if (_drawPile == null || _drawPile.Count == 0) return false;
+
+        int last = _drawPile.Count - 1;
+        card = _drawPile[last];
+        _drawPile.RemoveAt(last);
+        return true;
+    }
+
+    /// <summary>덱 풀에 남은 장수.</summary>
+    public int RemainingInPile => _drawPile != null ? _drawPile.Count : 0;
+
+    /// <summary>종류별 덱 풀 잔여 수 (인덱스 0~7 = 값 1~8, 8 = 조커).</summary>
+    public int[] GetRemainingCountsByType()
+    {
+        int[] counts = new int[9];
+        if (_drawPile == null) return counts;
+
+        foreach (var c in _drawPile)
+        {
+            int idx = c.isJoker ? 8 : (c.value >= 1 && c.value <= 8 ? c.value - 1 : -1);
+            if (idx >= 0) counts[idx]++;
+        }
+        return counts;
+    }
 
     void Update()
     {
-        // 드래프트 중이거나 턴 전환 대기 중에는 카드 상호작용 차단
-        if (_cardDraft == null) _cardDraft = FindObjectOfType<CardDraft>();
-        if (_cardDraft != null && _cardDraft.IsDrafting) return;
-
-        var mainFlow = FindObjectOfType<MainFlow>();
-        if (mainFlow != null && mainFlow.IsTransitioning) return;
-        // 상대 턴에는 카드 배치/드래그 등 상호작용 차단
-        if (mainFlow != null && !mainFlow.IsPlayerTurn) return;
-
         UpdateHoverAndDrag();
     }
 
@@ -133,28 +164,11 @@ public class Deck : MonoBehaviour
                     if (SoundManager.Instance != null)
                         SoundManager.Instance.PlaySFX(SoundManager.Instance.cardPlace);
 
-                    var cv = _draggingCard.GetComponent<CardValue>();
                     GameObject cardObj = _draggingCard.gameObject;
                     _spawnedCards.Remove(cardObj);
                     slot.PlaceCard(cardObj);
                     UpdateAllCardBases();
                     TriggerWaveAll(null);
-
-                    var mf = FindObjectOfType<MainFlow>();
-
-                    // 필드가 Guard 상태면 새로 놓인 카드도 뒷면으로 맞춘다
-                    if (mf != null) mf.OnPlayerCardPlaced(slot);
-
-                    // 온라인: 상대에게 카드 배치 알림
-                    if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame)
-                    {
-                        if (mf != null && mf.isOnlineMode && mf.playerSlots != null && cv != null)
-                        {
-                            int idx = System.Array.IndexOf(mf.playerSlots, slot);
-                            if (idx >= 0)
-                                NetworkManager.Instance.SendCardPlace(idx, cv.value, cv.cardType, cv.isJoker);
-                        }
-                    }
                 }
                 else
                 {
@@ -188,8 +202,6 @@ public class Deck : MonoBehaviour
         if (topHover != _currentHover)
         {
             // 떨림 방지: 현재 호버 카드의 base 영역 안이면 호버 유지
-            // (호버 애니메이션으로 콜라이더가 올라가면서 아래 카드가 감지되는 것 방지)
-            // 단, 더 높은 우선순위 카드로의 전환은 허용
             if (_currentHover != null
                 && (topHover == null || topHover.baseSortingOrder < _currentHover.baseSortingOrder))
             {
@@ -202,7 +214,6 @@ public class Deck : MonoBehaviour
                     float halfW = spriteSize.x * Mathf.Abs(scale.x) * 0.5f;
                     float halfH = spriteSize.y * Mathf.Abs(scale.y) * 0.5f;
 
-                    // 카드 회전 고려: 마우스를 카드 로컬 좌표로 변환
                     float angle = -_currentHover.baseLocalRot.eulerAngles.z * Mathf.Deg2Rad;
                     Vector2 diff = (Vector2)(mouseWorld - baseWorld);
                     Vector2 local = new Vector2(
@@ -257,6 +268,24 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
+    //  외부(진행 로직 등)에서 손패 카드를 슬롯에 배치
+    // ─────────────────────────────────────────
+    public bool PlaceCardInSlot(GameObject card, Slot slot)
+    {
+        if (card == null || slot == null || slot.HasCard || slot.IsChainLocked) return false;
+        if (!_spawnedCards.Contains(card)) return false;
+
+        _spawnedCards.Remove(card);
+        slot.PlaceCard(card);
+        UpdateAllCardBases();
+        TriggerWaveAll(null);
+
+        if (SoundManager.Instance != null)
+            SoundManager.Instance.PlaySFX(SoundManager.Instance.cardPlace);
+        return true;
+    }
+
+    // ─────────────────────────────────────────
     //  출렁임
     // ─────────────────────────────────────────
     private void TriggerWaveAll(CardHover except)
@@ -289,27 +318,22 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  카드 뽑기 (초기 drawCount장)
+    //  게임 시작 분배 (덱 풀 셔플 → 플레이어 drawCount장, 상대 drawCount장)
+    //  - 풀 소비 순서: 플레이어 먼저, 그다음 상대 (양 클라이언트 결정적)
     // ─────────────────────────────────────────
     [ContextMenu("카드 뽑기")]
     public void DrawCards()
     {
-        ClearCards();
-
-        if (_prefabPool == null)
-            _prefabPool = BuildPrefabPool();
-
-        if (_prefabPool.Count == 0)
-        {
-            Debug.LogWarning("[Deck] 유효한 카드 프리팹이 없습니다.");
-            return;
-        }
-
-        StartCoroutine(DealAnimation());
+        PrepareDeal(null);
     }
 
-    /// <summary>온라인용: 동일한 seed로 결정적 카드 뽑기 (양쪽 클라이언트 동일 손패 보장)</summary>
+    /// <summary>결정적 분배 (동일 seed → 양쪽 동일 덱 셔플·동일 손패)</summary>
     public void DrawCards(int seed)
+    {
+        PrepareDeal(new System.Random(seed));
+    }
+
+    private void PrepareDeal(System.Random rng)
     {
         ClearCards();
 
@@ -322,52 +346,153 @@ public class Deck : MonoBehaviour
             return;
         }
 
-        var rng = new System.Random(seed);
-        StartCoroutine(DealAnimation(rng));
+        BuildDrawPile(rng);
+        DealBoth();
+    }
+
+    /// <summary>풀을 재구성하지 않고, 남은 풀에서 플레이어·상대 손패를 새로 뽑아 교체.</summary>
+    public void RedealHands()
+    {
+        ClearCards();
+
+        if (_prefabPool == null) _prefabPool = BuildPrefabPool();
+        if (_drawPile == null)
+        {
+            Debug.LogWarning("[Deck] 덱 풀이 없어 손패를 교체할 수 없습니다.");
+            return;
+        }
+
+        DealBoth();
+    }
+
+    // 남은 풀에서 플레이어 drawCount장 → 상대 drawCount장 (결정적 순서)
+    private void DealBoth()
+    {
+        // 홀카드(손패)에는 조커가 들어가지 않음 — 풀에서 숫자 카드만 뽑는다.
+        // (조커는 풀에 남아 RandomSlot 커뮤니티로만 등장)
+        List<CardPool> playerCards = DrawNumbersOnly(drawCount);
+        StartCoroutine(DealAnimation(playerCards));
+
+        if (oppDeck == null) oppDeck = FindObjectOfType<OppDeck>();
+        if (oppDeck != null)
+        {
+            List<CardPool> oppCards = DrawNumbersOnly(drawCount);
+            oppDeck.DealInitialFromPile(oppCards);
+        }
+    }
+
+    /// <summary>현재 플레이어 손패의 카드 스펙 목록 (앞면 프리팹 포함).</summary>
+    public List<CardPool> GetHandSpecs()
+    {
+        var list = new List<CardPool>();
+        foreach (var card in _spawnedCards)
+        {
+            if (card == null) continue;
+            var cv = card.GetComponent<CardValue>();
+            if (cv == null) continue;
+
+            list.Add(new CardPool
+            {
+                value     = cv.value,
+                isJoker   = cv.isJoker,
+                poolIndex = cv.poolIndex,
+                prefab    = GetFrontPrefab(cv.value, cv.isJoker)
+            });
+        }
+        return list;
+    }
+
+    /// <summary>덱 풀에서 n장 pop (없으면 가능한 만큼).</summary>
+    private List<CardPool> DrawN(int n)
+    {
+        var list = new List<CardPool>(n);
+        for (int i = 0; i < n; i++)
+            if (DrawFromPile(out CardPool c)) list.Add(c);
+        return list;
+    }
+
+    /// <summary>덱 풀(45장)만 시드로 재구성한다 (손패 분배는 하지 않음). 홀 슬롯 모드용.</summary>
+    public void BuildPool(int seed)
+    {
+        if (_prefabPool == null) _prefabPool = BuildPrefabPool();
+        BuildDrawPile(new System.Random(seed));
+    }
+
+    /// <summary>홀카드용: 풀에서 숫자 카드만 n장 뽑아 스펙으로 반환 (조커 제외, 비복원).</summary>
+    public List<CardPool> DrawHoleSpecs(int n)
+    {
+        if (_prefabPool == null) _prefabPool = BuildPrefabPool();
+        if (_drawPile == null) return new List<CardPool>();
+        return DrawNumbersOnly(n);
+    }
+
+    /// <summary>풀에서 조커를 건너뛰고 숫자 카드만 n장 뽑는다 (조커는 풀에 남김). 손패 분배용.</summary>
+    private List<CardPool> DrawNumbersOnly(int n)
+    {
+        var list = new List<CardPool>(n);
+        if (_drawPile == null) return list;
+
+        for (int i = _drawPile.Count - 1; i >= 0 && list.Count < n; i--)
+        {
+            if (!_drawPile[i].isJoker)
+            {
+                list.Add(_drawPile[i]);
+                _drawPile.RemoveAt(i);
+            }
+        }
+        return list;
     }
 
     // ─────────────────────────────────────────
-    //  스페이스바: 카드 1장 추가 (최대 maxCards장)
+    //  덱 풀 구성: 종류별 copiesPerCard장 → 셔플 (Fisher-Yates)
+    // ─────────────────────────────────────────
+    private void BuildDrawPile(System.Random rng)
+    {
+        _drawPile = new List<CardPool>(_prefabPool.Count * copiesPerCard);
+        foreach (var type in _prefabPool)
+            for (int c = 0; c < copiesPerCard; c++)
+                _drawPile.Add(type);
+
+        for (int i = _drawPile.Count - 1; i > 0; i--)
+        {
+            int j = rng != null ? rng.Next(i + 1) : UnityEngine.Random.Range(0, i + 1);
+            (_drawPile[i], _drawPile[j]) = (_drawPile[j], _drawPile[i]);
+        }
+    }
+
+    // ─────────────────────────────────────────
+    //  카드 1장 추가 (최대 maxCards장)
     // ─────────────────────────────────────────
     public void AddOneCard()
     {
-        if (_prefabPool == null || _prefabPool.Count == 0) return;
         if (_spawnedCards.Count >= maxCards)
         {
             Debug.Log($"[Deck] 최대 {maxCards}장까지만 가능합니다.");
             return;
         }
 
-        var pick = _prefabPool[UnityEngine.Random.Range(0, _prefabPool.Count)];
-        SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.cardType, pick.poolIndex);
+        if (!DrawFromPile(out CardPool pick))
+        {
+            Debug.Log("[Deck] 덱 풀이 비어 더 뽑을 수 없습니다.");
+            return;
+        }
+
+        SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.poolIndex);
         UpdateAllCardBases();
     }
 
     // ─────────────────────────────────────────
     //  특정 값의 카드를 새로 생성하여 덱에 추가
     // ─────────────────────────────────────────
-    public void AddCardByValue(int value, CardType cardType = CardType.Attack, Vector3? startPos = null)
+    public void AddCardByValue(int value, Vector3? startPos = null)
     {
         if (_prefabPool == null) return;
 
-        // 해당 value + type의 프리팹 찾기
-        foreach (var entry in _prefabPool)
-        {
-            if (entry.value == value && !entry.isJoker && entry.cardType == cardType)
-            {
-                SpawnCard(entry.prefab, entry.value, false, entry.cardType, entry.poolIndex, startPos);
-                UpdateAllCardBases();
-                TriggerWaveAll(null);
-                return;
-            }
-        }
-
-        // 타입 일치 없으면 value만 매칭
         foreach (var entry in _prefabPool)
         {
             if (entry.value == value && !entry.isJoker)
             {
-                SpawnCard(entry.prefab, entry.value, false, cardType, entry.poolIndex, startPos);
+                SpawnCard(entry.prefab, entry.value, false, entry.poolIndex, startPos);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -378,7 +503,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  조커 카드를 새로 생성하여 덱에 추가
     // ─────────────────────────────────────────
-    public void AddJokerCard(CardType cardType = CardType.Attack, Vector3? startPos = null)
+    public void AddJokerCard(Vector3? startPos = null)
     {
         if (_prefabPool == null) return;
 
@@ -386,7 +511,7 @@ public class Deck : MonoBehaviour
         {
             if (entry.isJoker)
             {
-                SpawnCard(entry.prefab, 0, true, cardType, entry.poolIndex, startPos);
+                SpawnCard(entry.prefab, 0, true, entry.poolIndex, startPos);
                 UpdateAllCardBases();
                 TriggerWaveAll(null);
                 return;
@@ -419,7 +544,7 @@ public class Deck : MonoBehaviour
     // ─────────────────────────────────────────
     //  내부: 카드 생성 + CardHover 자동 부착
     // ─────────────────────────────────────────
-    private GameObject SpawnCard(GameObject prefab, int value, bool isJoker = false, CardType cardType = CardType.Attack, int poolIndex = 0, Vector3? startPos = null)
+    private GameObject SpawnCard(GameObject prefab, int value, bool isJoker = false, int poolIndex = 0, Vector3? startPos = null)
     {
         GameObject card = Instantiate(prefab, Parent);
 
@@ -440,12 +565,10 @@ public class Deck : MonoBehaviour
         if (card.GetComponent<CardHover>() == null)
             card.AddComponent<CardHover>();
 
-        // 카드 값 부여
         var cv = card.GetComponent<CardValue>();
         if (cv == null) cv = card.AddComponent<CardValue>();
         cv.value = value;
         cv.isJoker = isJoker;
-        cv.cardType = cardType;
         cv.poolIndex = poolIndex;
 
         _spawnedCards.Add(card);
@@ -453,30 +576,19 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  딜 애니메이션: 한 장씩 생성하면서 쫘라락
+    //  딜 애니메이션: 한 장씩 생성
     // ─────────────────────────────────────────
-    private IEnumerator DealAnimation(System.Random rng = null)
+    private IEnumerator DealAnimation(List<CardPool> cards)
     {
         _isAnimating = true;
-        
-        if (_cardDraft == null) _cardDraft = FindObjectOfType<CardDraft>();
-        Vector3? anchorPos = null;
-        if (_cardDraft != null && _cardDraft.deckAnchor != null)
-            anchorPos = _cardDraft.deckAnchor.position;
 
-        for (int i = 0; i < drawCount; i++)
+        foreach (var pick in cards)
         {
-            // 카드 선택: rng가 주어지면 결정적, 아니면 UnityEngine.Random
-            int pickIdx = rng != null
-                ? rng.Next(_prefabPool.Count)
-                : UnityEngine.Random.Range(0, _prefabPool.Count);
-            var pick = _prefabPool[pickIdx];
-            SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.cardType, pick.poolIndex, anchorPos);
+            SpawnCard(pick.prefab, pick.value, pick.isJoker, pick.poolIndex);
 
             if (SoundManager.Instance != null)
                 SoundManager.Instance.PlaySFX(SoundManager.Instance.cardDraw);
 
-            // 현재까지 생성된 전체 카드 재배치
             int count = _spawnedCards.Count;
             for (int j = 0; j < count; j++)
             {
@@ -529,7 +641,6 @@ public class Deck : MonoBehaviour
         rot = Quaternion.Euler(0f, 0f, -angleDeg);
     }
 
-
     // ─────────────────────────────────────────
     //  손패 정렬: 숫자순
     // ─────────────────────────────────────────
@@ -549,56 +660,12 @@ public class Deck : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  손패 정렬: 타입순 (같은 타입 내 숫자순)
-    // ─────────────────────────────────────────
-    public void SortByType()
-    {
-        if (_isAnimating || _spawnedCards.Count <= 1) return;
-        _spawnedCards.Sort((a, b) =>
-        {
-            var cva = a != null ? a.GetComponent<CardValue>() : null;
-            var cvb = b != null ? b.GetComponent<CardValue>() : null;
-            int ta = cva != null ? (int)cva.cardType : 0;
-            int tb = cvb != null ? (int)cvb.cardType : 0;
-            if (ta != tb) return ta.CompareTo(tb);
-            int va = cva != null ? cva.value : 0;
-            int vb = cvb != null ? cvb.value : 0;
-            return va.CompareTo(vb);
-        });
-        UpdateAllCardBases();
-        TriggerWaveAll(null);
-    }
-
-    // ─────────────────────────────────────────
-    //  같은 타입의 랜덤 카드 프리팹 반환 (슬롯 리롤용)
-    // ─────────────────────────────────────────
-    public bool GetRandomPrefabOfType(CardType type, out GameObject prefab, out int value, out bool isJoker)
-    {
-        prefab = null; value = 0; isJoker = false;
-
-        if (_prefabPool == null) return false;
-
-        var filtered = new List<CardPool>();
-        foreach (var p in _prefabPool)
-            if (p.cardType == type && !p.isJoker) filtered.Add(p);
-
-        if (filtered.Count == 0) return false;
-
-        var pick = filtered[UnityEngine.Random.Range(0, filtered.Count)];
-        prefab = pick.prefab;
-        value = pick.value;
-        isJoker = pick.isJoker;
-        return true;
-    }
-
-    // ─────────────────────────────────────────
-    //  활성 풀 전체에서 랜덤 카드 1장 (조커 포함, 모든 타입)
-    //  CardDraft 등 외부 추첨용
+    //  활성 풀 전체에서 랜덤 카드 1장 (조커 포함)
     // ─────────────────────────────────────────
     public bool GetRandomPrefabFromActivePool(
-        out GameObject prefab, out int value, out bool isJoker, out CardType cardType)
+        out GameObject prefab, out int value, out bool isJoker)
     {
-        prefab = null; value = 0; isJoker = false; cardType = CardType.Attack;
+        prefab = null; value = 0; isJoker = false;
 
         if (_prefabPool == null) _prefabPool = BuildPrefabPool();
         if (_prefabPool.Count == 0) return false;
@@ -607,8 +674,21 @@ public class Deck : MonoBehaviour
         prefab   = pick.prefab;
         value    = pick.value;
         isJoker  = pick.isJoker;
-        cardType = pick.cardType;
         return true;
+    }
+
+    // ─────────────────────────────────────────
+    //  값/조커로 앞면 프리팹 조회 (상대 카드 공개 등)
+    // ─────────────────────────────────────────
+    public GameObject GetFrontPrefab(int value, bool isJoker)
+    {
+        if (_prefabPool == null) _prefabPool = BuildPrefabPool();
+        foreach (var e in _prefabPool)
+        {
+            if (isJoker ? e.isJoker : (!e.isJoker && e.value == value))
+                return e.prefab;
+        }
+        return null;
     }
 
     // ─────────────────────────────────────────
@@ -629,9 +709,8 @@ public class Deck : MonoBehaviour
                 CardEntry card = group.cards[i];
                 if (card != null && card.prefab != null)
                 {
-                    bool joker = (i == 6); // 7번째 카드는 조커
+                    bool joker = (i == group.cards.Length - 1); // 마지막 칸이 조커
 
-                    // 프리팹에 CardValue가 있으면 그 값을 우선 사용 (이미지-값 불일치 방지)
                     int cardValue = joker ? 0 : i + 1;
                     var prefabCv = card.prefab.GetComponent<CardValue>();
                     if (!joker && prefabCv != null && prefabCv.value > 0)
@@ -642,7 +721,6 @@ public class Deck : MonoBehaviour
                         prefab = card.prefab,
                         value = cardValue,
                         isJoker = joker,
-                        cardType = group.groupType,
                         poolIndex = pool.Count
                     });
                 }

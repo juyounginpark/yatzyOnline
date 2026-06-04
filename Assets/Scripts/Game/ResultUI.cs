@@ -27,13 +27,22 @@ public class ResultUI : MonoBehaviour
     [Tooltip("결과 TMP의 캔버스를 Screen Space - Overlay로 강제 (카메라 줌과 무관)")]
     public bool forceOverlayCanvas = true;
 
+    [Header("─ 펀치 ─")]
+    [Tooltip("표시 시 텍스트 펀치 배율")]
+    public float punchScale = 1.35f;
+    [Tooltip("펀치 시간(초)")]
+    public float punchDuration = 0.3f;
+
     private float _shownAt;        // 완전히 떠오른 시각
     private Coroutine _fade;
+    private Coroutine _punch;
+    private Vector3 _baseScale = Vector3.one;
 
     void Awake()
     {
         if (resultText != null)
         {
+            _baseScale = resultText.transform.localScale;
             resultText.alpha = 0f;
             resultText.gameObject.SetActive(false);
 
@@ -55,11 +64,31 @@ public class ResultUI : MonoBehaviour
         resultText.text = string.Format(format, comboName, score);
         resultText.gameObject.SetActive(true);
 
+        if (_punch != null) StopCoroutine(_punch);
+        _punch = StartCoroutine(Punch());
+
         if (_fade != null) StopCoroutine(_fade);
         _fade = StartCoroutine(Fade(0f, 1f, dur));
         yield return _fade;
 
         _shownAt = Time.time;  // 완전히 보인 시점부터 플로팅 시간 계산
+    }
+
+    private IEnumerator Punch()
+    {
+        if (resultText == null || punchDuration <= 0f) yield break;
+        Transform tr = resultText.transform;
+        float t = 0f;
+        while (t < punchDuration)
+        {
+            t += Time.unscaledDeltaTime;
+            float k = Mathf.Clamp01(t / punchDuration);
+            float s = 1f + (punchScale - 1f) * Mathf.Sin(k * Mathf.PI);
+            tr.localScale = _baseScale * s;
+            yield return null;
+        }
+        tr.localScale = _baseScale;
+        _punch = null;
     }
 
     // 최소 플로팅 시간 보장 후 페이드아웃 + 비활성화
@@ -74,6 +103,16 @@ public class ResultUI : MonoBehaviour
         _fade = StartCoroutine(Fade(resultText.alpha, 0f, fadeOutDuration));
         yield return _fade;
 
+        resultText.gameObject.SetActive(false);
+    }
+
+    /// <summary>즉시 페이드아웃 (minFloat 대기 없음) — 상대 패로 넘어갈 때 등.</summary>
+    public IEnumerator FadeOut()
+    {
+        if (resultText == null || !resultText.gameObject.activeSelf) yield break;
+        if (_fade != null) StopCoroutine(_fade);
+        _fade = StartCoroutine(Fade(resultText.alpha, 0f, fadeOutDuration));
+        yield return _fade;
         resultText.gameObject.SetActive(false);
     }
 

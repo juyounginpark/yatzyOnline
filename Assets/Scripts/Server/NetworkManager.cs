@@ -52,6 +52,12 @@ public class NetworkManager : MonoBehaviour
     // 클라이언트 고유 ID — IsRemote 대신 패킷 from 필드로 자신 패킷 구분
     private string _myClientId;
 
+    // ── 결정적 선공 선출 (IsSuperGamer 가 양쪽 true 를 주는 경우 대비) ──
+    // 서로 Hello 를 교환해 상대 clientId 를 알아낸 뒤, 더 작은 clientId 가 선공이 된다(양쪽 동일 계산).
+    private string _oppClientId;
+    private bool   _helloReplied;
+    public bool    FirstResolved { get; private set; }
+
     // ─── 인게임 릴레이 큐 (이벤트 대신 폴링 방식) ───
     public readonly System.Collections.Generic.Queue<CardPlaceData> IncomingCardPlaces
         = new System.Collections.Generic.Queue<CardPlaceData>();
@@ -423,9 +429,10 @@ public class NetworkManager : MonoBehaviour
             return;
         }
         State   = NetState.InGame;
+        // 잠정값(폴백): 선출 핸드셰이크가 끝나기 전/실패 시 사용. ResolveFirstPlayer 가 확정 덮어씀.
         IsHost  = Backend.Match.IsSuperGamer();
-        IGoFirst = IsHost; // 호스트 = 선공, 게스트 = 후공
-        Debug.Log($"[Net] 게임 시작! IsHost: {IsHost}, IGoFirst: {IGoFirst}");
+        IGoFirst = IsHost; // 호스트 = 선공, 게스트 = 후공 (잠정)
+        Debug.Log($"[Net] 게임 시작! IsSuperGamer(잠정): IsHost:{IsHost}, IGoFirst:{IGoFirst}");
         _pendingGameStart = true; // 호스트/게스트 모두 씬 이동
     }
 
@@ -462,11 +469,11 @@ public class NetworkManager : MonoBehaviour
 
             case PacketType.CardPlace:
             {
-                int si, v; CardType ct; bool joker;
-                GamePacket.ParseCardPlace(json, out si, out v, out ct, out joker);
+                int si, v; bool joker;
+                GamePacket.ParseCardPlace(json, out si, out v, out joker);
                 Debug.Log($"[Net] CardPlace 큐에 저장 — slot:{si}");
                 IncomingCardPlaces.Enqueue(new CardPlaceData
-                    { slotIndex = si, value = v, cardType = ct, isJoker = joker });
+                    { slotIndex = si, value = v, isJoker = joker });
                 break;
             }
             case PacketType.CardReturn:
@@ -501,7 +508,38 @@ public class NetworkManager : MonoBehaviour
                 _gameOverHandled = true;
                 OnGameOver?.Invoke((int)json["win"] == 1);
                 break;
+
+            case PacketType.Hello:
+            {
+                // 상대 clientId = 패킷의 "from". 이걸 알면 선공을 결정적으로 정한다.
+                string oppId = json.Keys.Contains("from") ? (string)json["from"] : null;
+                if (!string.IsNullOrEmpty(oppId))
+                {
+                    _oppClientId = oppId;
+                    ResolveFirstPlayer();
+                    // 내 Hello 가 상대에게 안 닿았을 수 있으니 1회 답신 (핑퐁 방지: 1회만)
+                    if (!_helloReplied) { _helloReplied = true; SendHello(); }
+                }
+                break;
+            }
         }
+    }
+
+    // ── 선공 선출: 더 작은 clientId 가 선공(=호스트=시드 생성). 양쪽이 동일하게 계산. ──
+    public void SendHello()
+    {
+        if (State != NetState.InGame) return;
+        SendRaw(GamePacket.MakeHello());
+    }
+
+    private void ResolveFirstPlayer()
+    {
+        if (string.IsNullOrEmpty(_myClientId) || string.IsNullOrEmpty(_oppClientId)) return;
+        bool iAmFirst = string.CompareOrdinal(_myClientId, _oppClientId) < 0;
+        IGoFirst = iAmFirst;
+        IsHost   = iAmFirst;   // 시드 생성도 선공자가 담당 (양쪽 정확히 1명)
+        FirstResolved = true;
+        Debug.Log($"[Net] 선공 확정 — my:{_myClientId} opp:{_oppClientId} → IGoFirst:{IGoFirst}");
     }
 
     // ─────────────────────────────────────────
@@ -530,10 +568,10 @@ public class NetworkManager : MonoBehaviour
         SendRaw(GamePacket.MakeSync(timer, senderHp, receiverHp));
     }
 
-    public void SendCardPlace(int slotIndex, int value, CardType type, bool isJoker = false)
+    public void SendCardPlace(int slotIndex, int value, bool isJoker = false)
     {
         if (State != NetState.InGame) return;
-        SendRaw(GamePacket.MakeCardPlace(slotIndex, value, type, isJoker));
+        SendRaw(GamePacket.MakeCardPlace(slotIndex, value, isJoker));
     }
 
     public void SendCardReturn(int slotIndex)
@@ -545,17 +583,17 @@ public class NetworkManager : MonoBehaviour
     // 드래프트 결과 송신 (내 턴에 카드를 고른 뒤 호출)
     // me  = 내 패로 가져간 카드, opp = 상대 패로 넘긴 카드
     // left/right = 제시된 2장 전체 정보, choiceIsLeft = 왼쪽 선택 여부
-    public void SendDraft(bool hasMe, int meV, CardType meType, bool meJoker,
-                          bool hasOpp, int oppV, CardType oppType, bool oppJoker,
-                          bool hasLeft, int leftV, CardType leftType, bool leftJoker,
-                          bool hasRight, int rightV, CardType rightType, bool rightJoker,
+    public void SendDraft(bool hasMe, int meV, bool meJoker,
+                          bool hasOpp, int oppV, bool oppJoker,
+                          bool hasLeft, int leftV, bool leftJoker,
+                          bool hasRight, int rightV, bool rightJoker,
                           bool choiceIsLeft, bool isSingleCard = false)
     {
         if (State != NetState.InGame) return;
-        SendRaw(GamePacket.MakeDraft(hasMe, meV, (int)meType, meJoker,
-                                     hasOpp, oppV, (int)oppType, oppJoker,
-                                     hasLeft, leftV, (int)leftType, leftJoker,
-                                     hasRight, rightV, (int)rightType, rightJoker,
+        SendRaw(GamePacket.MakeDraft(hasMe, meV, meJoker,
+                                     hasOpp, oppV, oppJoker,
+                                     hasLeft, leftV, leftJoker,
+                                     hasRight, rightV, rightJoker,
                                      choiceIsLeft, isSingleCard));
     }
 

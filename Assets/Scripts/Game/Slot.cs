@@ -1,19 +1,16 @@
 using System.Collections;
-using System.Linq;
 using UnityEngine;
 
+// 카드가 놓이는 슬롯 프리미티브.
+// (턴/회수/가드토글 등 게임 진행 입력 처리는 제거됨 — 새 진행 로직에서 제어)
 public class Slot : MonoBehaviour
 {
     private GameObject _placedCard;
     private int _placedCardValue;
     private bool _placedCardIsJoker;
-    private CardType _placedCardType;
     private bool _isFlipping;
     private bool _isFlipped;
     private Vector3 _cardFittedScale; // FitToSlot 후 카드 스케일 저장
-
-    // 같은 프레임에 여러 슬롯이 동시에 우클릭을 처리하는 것 방지
-    private static int _lastReturnFrame = -1;
 
     public bool allowReturn = true;
 
@@ -31,89 +28,6 @@ public class Slot : MonoBehaviour
     {
         if (GetComponent<Collider2D>() == null)
             gameObject.AddComponent<BoxCollider2D>();
-    }
-
-    void Update()
-    {
-        bool isLeftClick = Input.GetMouseButtonDown(0);
-        bool isRightClick = Input.GetMouseButtonDown(1);
-        
-        if (!isLeftClick && !isRightClick) return;
-        if (!allowReturn || _placedCard == null || _isChainLocked) return;
-
-        // 드래프트 중에는 회수 및 뒤집기 차단
-        var cardDraft = FindObjectOfType<CardDraft>();
-        if (cardDraft != null && cardDraft.IsDrafting) return;
-
-        // 같은 프레임에 이미 다른 슬롯이 처리함
-        if (Time.frameCount == _lastReturnFrame) return;
-
-        // 마우스가 이 슬롯 위에 있는지 확인
-        Camera cam = Camera.main;
-        if (cam == null) return;
-        Vector2 mouseWorld = cam.ScreenToWorldPoint(Input.mousePosition);
-        var col = GetComponent<Collider2D>();
-        if (col == null || !col.OverlapPoint(mouseWorld)) return;
-
-        // MainFlow 참조 — 플레이어 턴이고 전환 중이 아닌지 확인
-        var mainFlow = FindObjectOfType<MainFlow>();
-        if (mainFlow != null)
-        {
-            if (mainFlow.IsTransitioning) return;
-            // 상대 턴에는 회수/뒤집기 등 상호작용 차단
-            if (!mainFlow.IsPlayerTurn) return;
-            // 이 슬롯이 플레이어 슬롯인지 확인
-            if (mainFlow.playerSlots != null && !mainFlow.playerSlots.Contains(this)) return;
-        }
-
-        var deck = FindObjectOfType<Deck>();
-        if (deck == null) return;
-
-        if (isLeftClick)
-        {
-            if (deck.cardBackPrefab == null) return;
-
-            _lastReturnFrame = Time.frameCount;
-
-            // 한 칸만이 아니라 플레이어 필드 전체가 함께 뒤집힌다 (Attack ↔ Guard)
-            if (mainFlow != null) mainFlow.ToggleFieldGuard();
-        }
-        else if (isRightClick)
-        {
-            // 손패가 이미 가득 차면 회수 불가
-            if (deck.IsHandFull) return;
-
-            _lastReturnFrame = Time.frameCount;
-
-            // GameFlow 이펙트 분리 (파괴 방지)
-            var gameFlow = FindObjectOfType<GameFlow>();
-            if (gameFlow != null && mainFlow != null && mainFlow.playerSlots != null)
-            {
-                int slotIdx = System.Array.IndexOf(mainFlow.playerSlots, this);
-                if (slotIdx >= 0) gameFlow.DetachSlotEffect(slotIdx);
-            }
-
-            // 카드 정보 읽기 (원본 유지되었으므로 뒤집힌 후라도 정보 읽기 가능)
-            var cv = _placedCard.GetComponent<CardValue>();
-            
-            ClearCard();  // 슬롯 카드 파괴
-
-            // 새 카드를 패에 추가 (스케일/콜라이더 왜곡 없는 깨끗한 새 객체)
-            // 시작 위치를 이 슬롯의 위치로 지정하여 덱에서 날아오지 않도록 함
-            if (cv != null)
-            {
-                if (cv.isJoker) deck.AddJokerCard(cv.cardType, transform.position);
-                else            deck.AddCardByValue(cv.value, cv.cardType, transform.position);
-            }
-
-            // 온라인: 상대에게 카드 회수 알림
-            if (NetworkManager.Instance != null && NetworkManager.Instance.State == NetState.InGame
-                && mainFlow != null && mainFlow.isOnlineMode && mainFlow.playerSlots != null)
-            {
-                int idx = System.Array.IndexOf(mainFlow.playerSlots, this);
-                if (idx >= 0) NetworkManager.Instance.SendCardReturn(idx);
-            }
-        }
     }
 
     private IEnumerator FlipCardRoutine(GameObject card, GameObject backPrefab, bool toBack, float duration = 0.15f)
@@ -136,14 +50,32 @@ public class Slot : MonoBehaviour
         }
 
         // 2) 비주얼 교체
+        ApplyFace(card, backPrefab, toBack);
+
+        // 3) 나머지 절반 뒤집기 (X 스케일 복구)
+        elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float t = elapsed / duration;
+            card.transform.localScale = new Vector3(Mathf.Lerp(0f, origScale.x, t), origScale.y, origScale.z);
+            yield return null;
+        }
+
+        card.transform.localScale = origScale;
+    }
+
+    // 앞면(toBack=false)/뒷면(toBack=true) 비주얼만 즉시 교체 (스케일 애니메이션 없음)
+    private void ApplyFace(GameObject card, GameObject backPrefab, bool toBack)
+    {
         if (toBack)
         {
             var cardSr = card.GetComponentInChildren<SpriteRenderer>();
-            
+
             // 앞면 렌더러 비활성화
             foreach (var sr in card.GetComponentsInChildren<SpriteRenderer>())
                 sr.enabled = false;
-            
+
             GameObject back = Instantiate(backPrefab, card.transform);
             back.name = "CardBack_Slot";
             back.transform.localPosition = Vector3.zero;
@@ -160,8 +92,7 @@ public class Slot : MonoBehaviour
                 back.transform.localScale = new Vector3(ratioX, ratioY, 1f);
             }
 
-            var backRenderers = back.GetComponentsInChildren<Renderer>();
-            foreach (var r in backRenderers)
+            foreach (var r in back.GetComponentsInChildren<Renderer>())
                 r.sortingOrder = 2;
         }
         else
@@ -175,18 +106,20 @@ public class Slot : MonoBehaviour
             foreach (var sr in card.GetComponentsInChildren<SpriteRenderer>())
                 sr.enabled = true;
         }
+    }
 
-        // 3) 나머지 절반 뒤집기 (X 스케일 복구)
-        elapsed = 0f;
-        while (elapsed < duration)
-        {
-            elapsed += Time.deltaTime;
-            float t = elapsed / duration;
-            card.transform.localScale = new Vector3(Mathf.Lerp(0f, origScale.x, t), origScale.y, origScale.z);
-            yield return null;
-        }
+    /// <summary>카드를 즉시 뒷면 상태로 배치한다 (애니메이션·사운드 없음).</summary>
+    public void PlaceCardFaceDown(GameObject card)
+    {
+        PlaceCard(card);
 
-        card.transform.localScale = origScale;
+        _isFlipped         = true;
+        _placedCardValue   = 0;
+        _placedCardIsJoker = false;
+
+        var deck = FindObjectOfType<Deck>();
+        if (deck != null && deck.cardBackPrefab != null)
+            ApplyFace(_placedCard, deck.cardBackPrefab, true);
     }
 
     public IEnumerator ForceReveal()
@@ -194,9 +127,7 @@ public class Slot : MonoBehaviour
         yield return StartCoroutine(FlipTo(false));
     }
 
-    /// <summary>
-    /// 느린 속도로 카드를 앞면으로 공개 (극적인 연출용)
-    /// </summary>
+    /// <summary>느린 속도로 카드를 앞면으로 공개 (극적인 연출용)</summary>
     public IEnumerator ForceRevealSlow(float duration = 0.5f)
     {
         yield return StartCoroutine(FlipTo(false, duration));
@@ -204,7 +135,7 @@ public class Slot : MonoBehaviour
 
     /// <summary>
     /// 카드를 앞면(toBack=false)/뒷면(toBack=true)으로 뒤집는다.
-    /// 이미 해당 상태면 아무 것도 하지 않는다. 필드 단위 뒤집기에서 각 슬롯에 호출.
+    /// 이미 해당 상태면 아무 것도 하지 않는다.
     /// </summary>
     public IEnumerator FlipTo(bool toBack, float duration = 0.15f)
     {
@@ -229,10 +160,7 @@ public class Slot : MonoBehaviour
         yield return StartCoroutine(FlipCardRoutine(_placedCard, deck.cardBackPrefab, toBack, duration));
     }
 
-    /// <summary>
-    /// 비주얼 전환 없이 Guard(뒷면) 논리 상태만 설정한다.
-    /// 온라인 상대 카드처럼 이미 뒷면 프리팹으로 생성된 경우에 사용.
-    /// </summary>
+    /// <summary>비주얼 전환 없이 Guard(뒷면) 논리 상태만 설정한다.</summary>
     public void MarkGuard(bool guard)
     {
         _isFlipped = guard;
@@ -249,9 +177,7 @@ public class Slot : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 카드를 파괴하지 않고 슬롯 참조만 비운다 (애니메이션이 이미 카드를 파괴한 경우).
-    /// </summary>
+    /// <summary>카드를 파괴하지 않고 슬롯 참조만 비운다.</summary>
     public void ForgetCard()
     {
         _placedCard  = null;
@@ -260,7 +186,6 @@ public class Slot : MonoBehaviour
 
     public void PlaceCard(GameObject card)
     {
-        // 기존 카드가 있으면 파괴 (AnimatePlace 경합으로 인한 잔류 방지)
         if (_placedCard != null && _placedCard != card)
             Destroy(_placedCard);
 
@@ -270,7 +195,6 @@ public class Slot : MonoBehaviour
         var cv = card.GetComponent<CardValue>();
         _placedCardValue = cv != null ? cv.value : 0;
         _placedCardIsJoker = cv != null && cv.isJoker;
-        _placedCardType = cv != null ? cv.cardType : CardType.Attack;
 
         card.transform.SetParent(transform);
         card.transform.localPosition = Vector3.zero;
@@ -312,15 +236,9 @@ public class Slot : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 카드를 파괴하지 않고 슬롯에서 분리하여 반환
-    /// </summary>
-    /// <summary>
-    /// FitToSlot 없이 카드를 배치 (이미 스케일이 맞춰진 경우 사용)
-    /// </summary>
+    /// <summary>FitToSlot 없이 카드를 배치 (이미 스케일이 맞춰진 경우 사용)</summary>
     public void PlaceCardRaw(GameObject card)
     {
-        // 기존 카드가 있으면 파괴 (잔류 방지)
         if (_placedCard != null && _placedCard != card)
             Destroy(_placedCard);
 
@@ -329,7 +247,6 @@ public class Slot : MonoBehaviour
         var cv = card.GetComponent<CardValue>();
         _placedCardValue = cv != null ? cv.value : 0;
         _placedCardIsJoker = cv != null && cv.isJoker;
-        _placedCardType = cv != null ? cv.cardType : CardType.Attack;
 
         card.transform.SetParent(transform);
         card.transform.localPosition = Vector3.zero;
@@ -388,10 +305,8 @@ public class Slot : MonoBehaviour
         _chainOverlay.transform.localRotation = Quaternion.identity;
         _chainOverlay.transform.localScale = Vector3.one;
 
-        // 슬롯 크기에 맞추기
         FitToSlot(_chainOverlay);
 
-        // 소팅 오더: 카드 위에 표시
         foreach (var sr in _chainOverlay.GetComponentsInChildren<SpriteRenderer>())
         {
             sr.sortingOrder = 10;
@@ -420,7 +335,6 @@ public class Slot : MonoBehaviour
             yield return null;
         }
 
-        // 페이드인 완료 후 떨림 시작
         StartCoroutine(ChainShakeLoop());
     }
 
@@ -428,11 +342,9 @@ public class Slot : MonoBehaviour
     {
         while (_isChainLocked && _chainOverlay != null)
         {
-            // 랜덤 간격 대기 (0.8~2초)
             yield return new WaitForSeconds(Random.Range(0.8f, 2f));
             if (!_isChainLocked || _chainOverlay == null) break;
 
-            // 짧은 떨림 (2~3회 진동)
             int shakes = Random.Range(2, 4);
             float intensity = 0.03f;
             for (int i = 0; i < shakes; i++)
@@ -450,7 +362,7 @@ public class Slot : MonoBehaviour
 
     public IEnumerator UnlockChain(float duration = 0.5f)
     {
-        _isChainLocked = false; // 떨림 루프 중지
+        _isChainLocked = false;
 
         if (_chainOverlay != null)
         {

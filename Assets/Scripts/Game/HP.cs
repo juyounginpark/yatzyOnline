@@ -45,21 +45,25 @@ public class HP : MonoBehaviour
     public float PlayerHP => _playerHP;
     public float OppHP => _oppHP;
 
-    /// <summary>온라인 동기화용 — 애니메이션 없이 즉시 설정</summary>
+    // 베팅 게임: LP는 시작값(maxHP)을 초과할 수 있음(상대 팟 회수). 하한 0만 클램프.
+
+    /// <summary>즉시 설정 (애니메이션 없음)</summary>
     public void SetPlayerHP(float value)
     {
-        _playerHP = Mathf.Clamp(value, 0f, maxHP);
+        _playerHP = Mathf.Max(0f, value);
         UpdateText(playerHPText, _playerHP);
     }
 
-    /// <summary>온라인 동기화용 — 애니메이션 없이 즉시 설정</summary>
+    /// <summary>즉시 설정 (애니메이션 없음)</summary>
     public void SetOppHP(float value)
     {
-        _oppHP = Mathf.Clamp(value, 0f, maxHP);
+        _oppHP = Mathf.Max(0f, value);
         UpdateText(oppHPText, _oppHP);
     }
 
-    void Start()
+    // Awake에서 초기화 — RoundDirector.Start()의 파산 체크보다 먼저 LP가 maxHP로 세팅되도록
+    // (모든 Awake는 모든 Start보다 먼저 실행됨)
+    void Awake()
     {
         _playerHP = maxHP;
         _oppHP = maxHP;
@@ -100,7 +104,7 @@ public class HP : MonoBehaviour
     public void HealPlayer(float amount)
     {
         float from = _playerHP;
-        _playerHP = Mathf.Min(maxHP, _playerHP + amount);
+        _playerHP = _playerHP + amount;
         if (_playerAnim != null) StopCoroutine(_playerAnim);
         _playerAnim = StartCoroutine(AnimateHP(playerHPText, from, _playerHP,
             _playerOriginalColor, _playerOriginalScale));
@@ -109,7 +113,7 @@ public class HP : MonoBehaviour
     public void HealOpp(float amount)
     {
         float from = _oppHP;
-        _oppHP = Mathf.Min(maxHP, _oppHP + amount);
+        _oppHP = _oppHP + amount;
         if (_oppAnim != null) StopCoroutine(_oppAnim);
         _oppAnim = StartCoroutine(AnimateHP(oppHPText, from, _oppHP,
             _oppOriginalColor, _oppOriginalScale));

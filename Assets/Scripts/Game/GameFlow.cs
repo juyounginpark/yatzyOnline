@@ -1,360 +1,24 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// ─────────────────────────────────────────────
+//  핸드 판정 (콤보 점수 로직)
+//  - 게임 진행/이펙트 로직은 제거됨. 순수 점수 계산 API 만 제공.
+//  - 조커는 1~6 전부 시도해 최고 점수 채택. 조커 5장은 특수 콤보(잭팟).
+//  - 잭팟 점수 결정용 시드는 sharedSeed 로 외부에서 주입(온라인 동기화 시).
+// ─────────────────────────────────────────────
 public class GameFlow : MonoBehaviour
 {
-    [Header("─ 슬롯 (5개) ─")]
-    public Slot[] slots = new Slot[5];
-
-    [Header("─ 이펙트 이미지 ─")]
-    [Tooltip("호버/홀드 중인 카드에 표시")]
-    public Sprite effectHover;
-
-    [Tooltip("조합에 기여하는 슬롯 카드에 표시")]
-    public Sprite effectContribute;
-
-    [Tooltip("슬롯에 넣었을 때 최고점이 나오는 덱 카드에 표시")]
-    public Sprite effectBestPick;
-
-    [Tooltip("방어 룰렛: 현재 선택된 칸에 덧씌우는 테두리 (비우면 카드 강조로 대체)")]
-    public Sprite effectRoulette;
-
     [Header("─ 조커 잭팟 (조커 5장 특수 콤보) ─")]
-    [Tooltip("조커 5장일 때 표시할 콤보 이름")]
     public string jokerComboName = "???";
-    [Tooltip("조커 5장 콤보 점수 랜덤 최소")]
-    public float jokerJackpotMin = 200f;
-    [Tooltip("조커 5장 콤보 점수 랜덤 최대")]
-    public float jokerJackpotMax = 300f;
+    public float  jokerJackpotMin = 200f;
+    public float  jokerJackpotMax = 300f;
 
-    [Header("─ 참조 ─")]
-    public Deck deck;
-
-    // ─── 이펙트 오브젝트 ───
-    private GameObject _hoverEffect;
-    private readonly List<GameObject> _bestPickEffects = new List<GameObject>();
-    private readonly List<GameObject> _slotEffects = new List<GameObject>();
-    private string _lastBestCombo = "";
-    private GameObject _lastEffectTarget;
-
-    // ─── 방어 룰렛 이펙트 ───
-    private GameObject _rouletteEffect;
-    private bool       _rouletteActive;
-    private GameObject _rouletteScaleCard;   // fallback(테두리 스프라이트 없음) 강조 대상
-    private Vector3    _rouletteScaleBase;
-
-    public float CurrentBestScore { get; private set; }
-    public string CurrentBestRule { get; private set; } = "";
-
-    private MainFlow _mainFlow;
-
-    void Start()
-    {
-        _mainFlow = FindObjectOfType<MainFlow>();
-        if (deck == null)
-            deck = FindObjectOfType<Deck>();
-
-        for (int i = 0; i < slots.Length; i++)
-        {
-            var fx = CreateEffectObject($"SlotEffect_{i}", effectContribute);
-            fx.SetActive(false);
-            _slotEffects.Add(fx);
-        }
-
-        _hoverEffect = CreateEffectObject("HoverEffect", effectHover);
-        _hoverEffect.SetActive(false);
-
-        for (int i = 0; i < 10; i++)
-        {
-            var fx = CreateEffectObject($"BestPickEffect_{i}", effectBestPick);
-            fx.SetActive(false);
-            _bestPickEffects.Add(fx);
-        }
-    }
-
-    void Update()
-    {
-        // 룰렛 연출 중에는 다른 이펙트를 갱신하지 않음 (카드 파괴와 충돌 방지)
-        if (_rouletteActive) return;
-
-        // 플레이어 턴이 아니거나 턴 전환 연출 중이면 이펙트를 숨김
-        if (_mainFlow != null && (!_mainFlow.IsPlayerTurn || _mainFlow.IsTransitioning))
-        {
-            DetachAllEffects();
-            return;
-        }
-
-        UpdateHoverEffect();
-        UpdateSlotEffects();
-        UpdateBestPickEffect();
-    }
+    [Tooltip("잭팟 점수 결정용 공유 시드 (온라인 동기화 시 양쪽 동일 값 주입)")]
+    public int sharedSeed = 0;
 
     // ─────────────────────────────────────────
-    //  방어 룰렛 이펙트 (현재 선택 칸에 테두리 덧씌우기)
-    // ─────────────────────────────────────────
-    /// <summary>룰렛 테두리를 해당 슬롯 카드 위로 이동/표시</summary>
-    public void ShowRouletteEffect(Slot slot)
-    {
-        // 룰렛 시작 시 기존 이펙트를 모두 떼어 카드 파괴와 얽히지 않게 함
-        if (!_rouletteActive)
-        {
-            _rouletteActive = true;
-            DetachAllEffects();
-        }
-
-        var card = slot != null ? slot.GetPlacedCard() : null;
-        if (card == null) return;
-
-        // 이전 fallback 강조 복원
-        RestoreRouletteScale();
-
-        if (effectRoulette != null)
-        {
-            if (_rouletteEffect == null)
-                _rouletteEffect = CreateEffectObject("RouletteEffect", effectRoulette);
-            _rouletteEffect.SetActive(true);
-            AttachEffect(_rouletteEffect, card, effectRoulette, 110);
-        }
-        else
-        {
-            // 테두리 스프라이트가 없으면 카드를 살짝 키워 강조
-            _rouletteScaleCard = card;
-            _rouletteScaleBase = card.transform.localScale;
-            card.transform.localScale = _rouletteScaleBase * 1.12f;
-        }
-    }
-
-    /// <summary>테두리만 떼고 룰렛 상태는 유지 (선택 카드 파괴 직전 호출)</summary>
-    public void ClearRouletteBorder()
-    {
-        RestoreRouletteScale();
-        DetachEffect(_rouletteEffect);
-    }
-
-    /// <summary>룰렛 종료 — 테두리/강조 해제 및 일반 이펙트 갱신 재개</summary>
-    public void HideRouletteEffect()
-    {
-        ClearRouletteBorder();
-        _rouletteActive = false;
-    }
-
-    private void RestoreRouletteScale()
-    {
-        if (_rouletteScaleCard != null && _rouletteScaleBase != Vector3.zero)
-            _rouletteScaleCard.transform.localScale = _rouletteScaleBase;
-        _rouletteScaleCard = null;
-    }
-
-    private void DetachAllEffects()
-    {
-        foreach (var fx in _slotEffects)    DetachEffect(fx);
-        foreach (var fx in _bestPickEffects) DetachEffect(fx);
-        DetachEffect(_hoverEffect);
-    }
-
-    // ─────────────────────────────────────────
-    //  호버/홀드 이펙트 (덱 카드)
-    // ─────────────────────────────────────────
-    private void UpdateHoverEffect()
-    {
-        if (deck == null || effectHover == null)
-        {
-            DetachEffect(_hoverEffect);
-            return;
-        }
-
-        GameObject target = deck.DraggedCard ?? deck.HoveredCard;
-
-        if (target != null)
-        {
-            if (_hoverEffect == null)
-                _hoverEffect = CreateEffectObject("HoverEffect", effectHover);
-            _hoverEffect.SetActive(true);
-            AttachEffect(_hoverEffect, target, effectHover, 200);
-        }
-        else
-        {
-            DetachEffect(_hoverEffect);
-        }
-
-        _lastEffectTarget = target;
-    }
-
-    // ─────────────────────────────────────────
-    //  추천 카드 이펙트 (덱에서 넣으면 최고점인 카드)
-    // ─────────────────────────────────────────
-    private void UpdateBestPickEffect()
-    {
-        if (deck == null || effectBestPick == null || deck.IsAnimating)
-        {
-            foreach (var fx in _bestPickEffects) DetachEffect(fx);
-            return;
-        }
-
-        var cards = deck.SpawnedCards;
-
-        int slotCount = slots.Length;
-        int[] allValues = new int[slotCount + cards.Count];
-        bool[] jokerFlags = new bool[slotCount + cards.Count];
-
-        for (int i = 0; i < slotCount; i++)
-        {
-            if (slots[i] != null && slots[i].HasVisibleCard
-                && !slots[i].IsChainLocked)
-            {
-                var cv = slots[i].GetCardValue();
-                if (cv != null)
-                {
-                    jokerFlags[i] = cv.isJoker;
-                    allValues[i] = cv.isJoker ? 0 : cv.value;
-                }
-            }
-        }
-
-        for (int i = 0; i < cards.Count; i++)
-        {
-            var cv = cards[i] != null ? cards[i].GetComponent<CardValue>() : null;
-            if (cv != null)
-            {
-                jokerFlags[slotCount + i] = cv.isJoker;
-                allValues[slotCount + i] = cv.isJoker ? 0 : cv.value;
-            }
-        }
-
-        int[] resolved = ResolveJokersOptimal(allValues, jokerFlags);
-
-        string dummy;
-        float dummyScore;
-        bool[] contributing = FindContributingIndices(resolved, out dummy, out dummyScore);
-
-        // 호버/드래그된 카드는 이미 hover 테두리가 적용되므로 BestPick 중복 표시 방지
-        GameObject hoveredCard = deck.DraggedCard ?? deck.HoveredCard;
-
-        for (int i = 0; i < _bestPickEffects.Count; i++)
-        {
-            int idx = slotCount + i;
-            bool inRange   = i < cards.Count && cards[i] != null;
-            bool isHovered = inRange && cards[i] == hoveredCard;
-            if (inRange && idx < contributing.Length && contributing[idx] && !isHovered)
-            {
-                if (_bestPickEffects[i] == null)
-                    _bestPickEffects[i] = CreateEffectObject($"BestPickEffect_{i}", effectBestPick);
-                _bestPickEffects[i].SetActive(true);
-                var hover = cards[i].GetComponent<CardHover>();
-                int sortOrder = hover != null ? hover.baseSortingOrder + 1 : 101;
-                AttachEffect(_bestPickEffects[i], cards[i], effectBestPick, sortOrder);
-            }
-            else
-            {
-                DetachEffect(_bestPickEffects[i]);
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  슬롯 조합 기여 이펙트
-    // ─────────────────────────────────────────
-    private void UpdateSlotEffects()
-    {
-        string currentBest;
-        float currentScore;
-        bool[] contributing = GetContributingSlots(out currentBest, out currentScore);
-
-        CurrentBestRule = currentBest;
-        CurrentBestScore = currentScore;
-
-        if (currentBest != _lastBestCombo)
-        {
-            _lastBestCombo = currentBest;
-            if (!string.IsNullOrEmpty(currentBest))
-                EvaluateAndLog();
-        }
-        for (int i = 0; i < slots.Length; i++)
-        {
-            if (i >= _slotEffects.Count) break;
-
-            bool showEffect = (contributing[i] && slots[i] != null && slots[i].HasVisibleCard)
-                           || (slots[i] != null && slots[i].HasCard && !slots[i].HasVisibleCard);
-
-            if (showEffect)
-            {
-                if (_slotEffects[i] == null)
-                    _slotEffects[i] = CreateEffectObject($"SlotEffect_{i}", effectContribute);
-                _slotEffects[i].SetActive(true);
-                GameObject slotCard = slots[i].GetPlacedCard();
-                if (slotCard != null)
-                    AttachEffect(_slotEffects[i], slotCard, effectContribute, 50);
-            }
-            else
-            {
-                DetachEffect(_slotEffects[i]);
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────
-    //  이펙트를 카드 위에 맞추기
-    // ─────────────────────────────────────────
-    private void AttachEffect(GameObject fx, GameObject card, Sprite sprite, int sortOrder)
-    {
-        fx.transform.SetParent(card.transform);
-        fx.transform.localPosition = Vector3.zero;
-        fx.transform.localRotation = Quaternion.identity;
-
-        var cardSr = card.GetComponentInChildren<SpriteRenderer>();
-        if (cardSr == null || cardSr.sprite == null) return;
-
-        var fxSr = fx.GetComponent<SpriteRenderer>();
-        fxSr.sortingOrder = sortOrder;
-        
-        // 카드가 투명상태면 이펙트도 투명하게 (드래프트 등)
-        float a = cardSr.color.a;
-        fxSr.color = new Color(1f, 1f, 1f, a);
-
-        Vector2 cardSpriteSize = cardSr.sprite.bounds.size;
-        Vector3 cardScale = cardSr.transform.lossyScale;
-        float cardW = cardSpriteSize.x * Mathf.Abs(cardScale.x);
-        float cardH = cardSpriteSize.y * Mathf.Abs(cardScale.y);
-
-        Vector2 effectSize = sprite.bounds.size;
-
-        Vector3 parentLossy = card.transform.lossyScale;
-        float lsX = parentLossy.x != 0f ? (cardW / effectSize.x) / Mathf.Abs(parentLossy.x) : 1f;
-        float lsY = parentLossy.y != 0f ? (cardH / effectSize.y) / Mathf.Abs(parentLossy.y) : 1f;
-        fx.transform.localScale = new Vector3(lsX, lsY, 1f);
-    }
-
-    private void DetachEffect(GameObject fx)
-    {
-        if (fx == null || !fx.activeSelf) return;
-        fx.transform.SetParent(null);
-        fx.SetActive(false);
-    }
-
-    /// <summary>
-    /// 특정 슬롯의 이펙트를 즉시 분리합니다.
-    /// 슬롯 리롤 시 이전 카드와 함께 이펙트가 파괴되는 것을 방지합니다.
-    /// </summary>
-    public void DetachSlotEffect(int slotIndex)
-    {
-        if (slotIndex < 0 || slotIndex >= _slotEffects.Count) return;
-        DetachEffect(_slotEffects[slotIndex]);
-    }
-
-    // ─────────────────────────────────────────
-    //  이펙트 오브젝트 생성
-    // ─────────────────────────────────────────
-    private GameObject CreateEffectObject(string name, Sprite sprite)
-    {
-        var go = new GameObject(name);
-        var sr = go.AddComponent<SpriteRenderer>();
-        sr.sprite = sprite;
-        sr.color = Color.white;
-        return go;
-    }
-
-    // ─────────────────────────────────────────
-    //  외부용: 슬롯 배열에서 조커 해석 포함 최고 점수 계산
+    //  외부용: 슬롯 배열에서 조커 해석 포함 최고 점수
     // ─────────────────────────────────────────
     public void GetBestCombo(Slot[] targetSlots, out string bestComboName, out float bestComboScore)
     {
@@ -397,45 +61,10 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  슬롯 조합 기여 계산 (내부) — 조커 해석 포함
-    // ─────────────────────────────────────────
-    private bool[] GetContributingSlots(out string bestComboName, out float bestComboScore)
-    {
-        int[] slotValues = new int[slots.Length];
-        bool[] jokerFlags = new bool[slots.Length];
-        for (int i = 0; i < slots.Length; i++)
-        {
-            if (slots[i] != null && slots[i].HasVisibleCard
-                && !slots[i].IsChainLocked)
-            {
-                var cv = slots[i].GetCardValue();
-                if (cv != null)
-                {
-                    jokerFlags[i] = cv.isJoker;
-                    slotValues[i] = cv.isJoker ? 0 : cv.value;
-                }
-            }
-        }
-        // 조커 5장 특수 콤보 — 모든 배치 카드가 기여
-        if (TryJokerJackpot(slots, jokerFlags, out bestComboName, out bestComboScore))
-        {
-            bool[] allContrib = new bool[slots.Length];
-            for (int i = 0; i < slots.Length; i++)
-                allContrib[i] = slots[i] != null && slots[i].HasVisibleCard
-                    && !slots[i].IsChainLocked && slots[i].GetCardValue() != null;
-            return allContrib;
-        }
-
-        int[] resolved = ResolveJokersOptimal(slotValues, jokerFlags);
-        return FindContributingIndices(resolved, out bestComboName, out bestComboScore);
-    }
-
-    // ─────────────────────────────────────────
-    //  조커 5장 특수 콤보(잭팟) — 점수는 필드별로 1회 추첨 후 캐시
+    //  조커 5장 특수 콤보(잭팟) — 필드별 1회 추첨 후 캐시
     // ─────────────────────────────────────────
     private readonly Dictionary<object, float> _jokerJackpot = new Dictionary<object, float>();
 
-    // 모든 배치 카드가 조커(5장)면 name/score를 채우고 true 반환
     private bool TryJokerJackpot(Slot[] s, bool[] jokerFlags, out string name, out float score)
     {
         name = "";
@@ -459,11 +88,10 @@ public class GameFlow : MonoBehaviour
             return true;
         }
 
-        ClearJokerJackpot(s);  // 조건 해제 시 캐시 비워 다음 5조커 때 재추첨
+        ClearJokerJackpot(s);
         return false;
     }
 
-    // 필드(첫 슬롯)별로 점수 캐시 — 매 프레임 호출돼도 같은 값, 표시=판정 일치
     private object JackpotKey(Slot[] s)
         => (s != null && s.Length > 0 && s[0] != null) ? (object)s[0] : this;
 
@@ -472,10 +100,8 @@ public class GameFlow : MonoBehaviour
         object key = JackpotKey(s);
         if (!_jokerJackpot.TryGetValue(key, out float v))
         {
-            // 온라인 양 클라이언트가 동일한 잭팟 점수를 갖도록 공유 시드 기반 결정적 난수 사용.
-            // (UnityEngine.Random은 클라이언트마다 달라 표시/데미지가 어긋남)
-            int seed = _mainFlow != null ? _mainFlow.SharedSeed : 0;
-            var rng = new System.Random(seed);
+            // 온라인 동기화 시 양쪽 동일 결과를 위해 공유 시드 기반 결정적 난수 사용
+            var rng = new System.Random(sharedSeed);
             v = rng.Next(Mathf.RoundToInt(jokerJackpotMin),
                          Mathf.RoundToInt(jokerJackpotMax) + 1);
             _jokerJackpot[key] = v;
@@ -505,7 +131,7 @@ public class GameFlow : MonoBehaviour
         float bestScore = -1f;
 
         int totalCombos = 1;
-        for (int j = 0; j < jokerIndices.Count; j++) totalCombos *= 6;
+        for (int j = 0; j < jokerIndices.Count; j++) totalCombos *= 8;
 
         int[] trial = new int[values.Length];
         for (int combo = 0; combo < totalCombos; combo++)
@@ -515,8 +141,8 @@ public class GameFlow : MonoBehaviour
             int c = combo;
             for (int j = 0; j < jokerIndices.Count; j++)
             {
-                trial[jokerIndices[j]] = (c % 6) + 1;
-                c /= 6;
+                trial[jokerIndices[j]] = (c % 8) + 1;
+                c /= 8;
             }
 
             List<int> filled = new List<int>();
@@ -538,169 +164,7 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  공통: 값 배열에서 최고 조합 기여 인덱스 계산
-    // ─────────────────────────────────────────
-    private bool[] FindContributingIndices(int[] values, out string bestComboName, out float bestComboScore)
-    {
-        bestComboName = "";
-        bestComboScore = 0f;
-        bool[] result = new bool[values.Length];
-
-        List<int> filledValues = new List<int>();
-        for (int i = 0; i < values.Length; i++)
-            if (values[i] > 0) filledValues.Add(values[i]);
-
-        if (filledValues.Count == 0) return result;
-
-        int[] dice = filledValues.ToArray();
-        bestComboScore = EvaluateHand(dice, out bestComboName);
-        if (bestComboScore <= 0f) return result;
-
-        int[] counts = CountDice(dice);
-
-        switch (bestComboName)
-        {
-            case "파이브카드":
-            {
-                int val = 0;
-                for (int i = 6; i >= 1; i--) if (counts[i] >= 5) { val = i; break; }
-                result = MarkSlots(values, v => v == val, 5);
-                break;
-            }
-            case "포카드":
-            {
-                int val = 0;
-                for (int i = 6; i >= 1; i--) if (counts[i] >= 4) { val = i; break; }
-                result = MarkSlots(values, v => v == val, 4);
-                break;
-            }
-            case "풀하우스":
-            {
-                int tripleVal = 0, pairVal = 0;
-                for (int i = 6; i >= 1; i--)
-                {
-                    if (counts[i] >= 3 && tripleVal == 0) tripleVal = i;
-                    else if (counts[i] >= 2 && pairVal == 0) pairVal = i;
-                }
-                bool[] marks = new bool[values.Length];
-                int ct = 0, cp = 0;
-                for (int j = 0; j < values.Length; j++)
-                {
-                    if (values[j] == tripleVal && ct < 3) { marks[j] = true; ct++; }
-                    else if (values[j] == pairVal && cp < 2) { marks[j] = true; cp++; }
-                }
-                result = marks;
-                break;
-            }
-            case "스트레이트(하이)":
-                result = MarkSlotsInSet(values, new HashSet<int> { 2, 3, 4, 5, 6 });
-                break;
-            case "스트레이트(로우)":
-                result = MarkSlotsInSet(values, new HashSet<int> { 1, 2, 3, 4, 5 });
-                break;
-            case "스몰스트레이트":
-            {
-                HashSet<int> unique = new HashSet<int>();
-                for (int i = 0; i < values.Length; i++)
-                    if (values[i] > 0) unique.Add(values[i]);
-                HashSet<int> matched = null;
-                if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6))
-                    matched = new HashSet<int> { 3, 4, 5, 6 };
-                else if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5))
-                    matched = new HashSet<int> { 2, 3, 4, 5 };
-                else if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4))
-                    matched = new HashSet<int> { 1, 2, 3, 4 };
-                if (matched != null)
-                    result = MarkSlotsInSet(values, matched);
-                break;
-            }
-            case "트리플":
-            {
-                int val = 0;
-                for (int i = 6; i >= 1; i--) if (counts[i] >= 3) { val = i; break; }
-                result = MarkSlots(values, v => v == val, 3);
-                break;
-            }
-            case "투페어":
-            {
-                List<int> pairs = new List<int>();
-                for (int i = 6; i >= 1; i--) if (counts[i] >= 2) pairs.Add(i);
-                if (pairs.Count >= 2)
-                {
-                    int bigP = pairs[0], smallP = pairs[1];
-                    bool[] marks = new bool[values.Length];
-                    int c1 = 0, c2 = 0;
-                    for (int j = 0; j < values.Length; j++)
-                    {
-                        if (values[j] == bigP && c1 < 2) { marks[j] = true; c1++; }
-                        else if (values[j] == smallP && c2 < 2) { marks[j] = true; c2++; }
-                    }
-                    result = marks;
-                }
-                break;
-            }
-            case "원페어":
-            {
-                int val = 0;
-                for (int i = 6; i >= 1; i--) if (counts[i] >= 2) { val = i; break; }
-                result = MarkSlots(values, v => v == val, 2);
-                break;
-            }
-            case "하이카드":
-            {
-                int highVal = 0;
-                for (int i = 0; i < values.Length; i++)
-                    if (values[i] > highVal) highVal = values[i];
-                result = MarkSlots(values, v => v == highVal, 1);
-                break;
-            }
-        }
-
-        return result;
-    }
-
-    // ─── 기여 슬롯 마킹 헬퍼 ───
-
-    private bool[] MarkSlots(int[] slotValues, System.Func<int, bool> predicate, int maxCount = int.MaxValue)
-    {
-        bool[] marks = new bool[slotValues.Length];
-        int count = 0;
-        for (int i = 0; i < slotValues.Length; i++)
-        {
-            if (slotValues[i] > 0 && predicate(slotValues[i]) && count < maxCount)
-            {
-                marks[i] = true;
-                count++;
-            }
-        }
-        return marks;
-    }
-
-    private bool[] MarkAllFilled(int[] slotValues)
-    {
-        bool[] marks = new bool[slotValues.Length];
-        for (int i = 0; i < slotValues.Length; i++)
-            if (slotValues[i] > 0) marks[i] = true;
-        return marks;
-    }
-
-    private bool[] MarkSlotsInSet(int[] slotValues, HashSet<int> set)
-    {
-        bool[] marks = new bool[slotValues.Length];
-        HashSet<int> used = new HashSet<int>();
-        for (int i = 0; i < slotValues.Length; i++)
-        {
-            if (slotValues[i] > 0 && set.Contains(slotValues[i]) && !used.Contains(slotValues[i]))
-            {
-                marks[i] = true;
-                used.Add(slotValues[i]);
-            }
-        }
-        return marks;
-    }
-
-    // ─────────────────────────────────────────
-    //  외부용: 값/조커 배열에서 조커 해석 포함 점수 계산
+    //  외부용: 값/조커 배열에서 조커 해석 포함 점수
     // ─────────────────────────────────────────
     public float EvaluateValues(int[] values, bool[] jokerFlags, out string ruleName)
     {
@@ -714,22 +178,48 @@ public class GameFlow : MonoBehaviour
     }
 
     // ─────────────────────────────────────────
-    //  디버그 로그
+    //  블러드 베팅 룰: 7장(홀2+중앙5) 중 숫자카드 best-5 조합
+    //  - 조커는 쓰레기(평가 제외) — 호출 전 numberValues에서 조커를 빼고 넘길 것
+    //  - 숫자카드가 5장 이하면 그대로 평가, 6장 이상이면 C(n,5) 전부 시도해 최고 채택
     // ─────────────────────────────────────────
-    private void EvaluateAndLog()
+    public float EvaluateBestOfSeven(int[] numberValues, out string ruleName)
     {
-        List<string> display = new List<string>();
-        foreach (var slot in slots)
-        {
-            if (slot == null || !slot.HasVisibleCard) continue;
-            var cv = slot.GetCardValue();
-            if (cv != null)
-                display.Add(cv.isJoker ? "J" : cv.value.ToString());
-        }
-        if (display.Count == 0) return;
+        ruleName = "";
+        if (numberValues == null || numberValues.Length == 0) return 0f;
+        if (numberValues.Length <= 5)
+            return EvaluateHand(numberValues, out ruleName);
 
-        string diceStr = string.Join(", ", display);
-        Debug.Log($"[GameFlow] 카드: [{diceStr}] → 최고: {CurrentBestRule} ({CurrentBestScore:F1}점)");
+        float best = -1f;
+        string bestRule = "";
+        int n = numberValues.Length;
+        int[] hand = new int[5];
+
+        for (int a = 0;     a < n - 4; a++)
+        for (int b = a + 1; b < n - 3; b++)
+        for (int c = b + 1; c < n - 2; c++)
+        for (int d = c + 1; d < n - 1; d++)
+        for (int e = d + 1; e < n;     e++)
+        {
+            hand[0] = numberValues[a]; hand[1] = numberValues[b]; hand[2] = numberValues[c];
+            hand[3] = numberValues[d]; hand[4] = numberValues[e];
+
+            float s = EvaluateHand(hand, out string r);
+            if (s > best) { best = s; bestRule = r; }
+        }
+
+        ruleName = bestRule;
+        return best < 0f ? 0f : best;
+    }
+
+    /// <summary>슬롯/카드 목록(조커 포함)에서 조커를 빼고 best-5 평가. 편의 래퍼.</summary>
+    public float EvaluateBestOfSeven(IEnumerable<CardValue> cards, out string ruleName)
+    {
+        var nums = new List<int>();
+        if (cards != null)
+            foreach (var cv in cards)
+                if (cv != null && !cv.isJoker && cv.value >= 1 && cv.value <= 8)
+                    nums.Add(cv.value);
+        return EvaluateBestOfSeven(nums.ToArray(), out ruleName);
     }
 
     // ─────────────────────────────────────────
@@ -782,43 +272,39 @@ public class GameFlow : MonoBehaviour
     // ─────────────────────────────────────────
     //  스코어링 함수들
     // ─────────────────────────────────────────
-
     private int[] CountDice(int[] dice)
     {
-        int[] counts = new int[7];
+        int[] counts = new int[9];
         foreach (int d in dice)
-            if (d >= 1 && d <= 6) counts[d]++;
+            if (d >= 1 && d <= 8) counts[d]++;
         return counts;
     }
 
-    // 파이브카드: 95 + num × 0.5
     private float ScoreFiveOfAKind(int[] counts)
     {
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (counts[i] >= 5) return 95f + i * 0.5f;
         return 0f;
     }
 
-    // 포카드: 80 + fourVal × 1 + kicker × 0.1
     private float ScoreFourOfAKind(int[] counts)
     {
         int fourVal = 0;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (counts[i] >= 4) { fourVal = i; break; }
         if (fourVal == 0) return 0f;
 
         int kicker = 0;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (i != fourVal && counts[i] > 0) { kicker = i; break; }
 
         return 80f + fourVal * 1f + kicker * 0.1f;
     }
 
-    // 풀하우스: 65 + tripleVal × 1 + pairVal × 0.1
     private float ScoreFullHouse(int[] counts)
     {
         int tripleVal = 0, pairVal = 0;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
         {
             if (counts[i] >= 3 && tripleVal == 0)
                 tripleVal = i;
@@ -828,50 +314,52 @@ public class GameFlow : MonoBehaviour
         return (tripleVal > 0 && pairVal > 0) ? 65f + tripleVal * 1f + pairVal * 0.1f : 0f;
     }
 
-    // 스트레이트(하이): 2,3,4,5,6 → 70
+    // 연속 run 보유 여부 (top 포함 아래로 len개)
+    private static bool HasRun(HashSet<int> unique, int top, int len)
+    {
+        for (int v = top; v > top - len; v--)
+            if (!unique.Contains(v)) return false;
+        return true;
+    }
+
+    // 하이 스트레이트: 5연속 중 top이 6 이상 (2-6=70, 3-7=75, 4-8=80)
     private float ScoreStraightHigh(int[] sorted)
     {
         HashSet<int> unique = new HashSet<int>(sorted);
-        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4)
-            && unique.Contains(5) && unique.Contains(6))
-            return 70f;
+        for (int top = 8; top >= 6; top--)
+            if (HasRun(unique, top, 5))
+                return 40f + top * 5f;
         return 0f;
     }
 
-    // 스트레이트(로우): 1,2,3,4,5 → 65
+    // 로우 스트레이트: 1-5 (=65)
     private float ScoreStraightLow(int[] sorted)
     {
         HashSet<int> unique = new HashSet<int>(sorted);
-        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3)
-            && unique.Contains(4) && unique.Contains(5))
-            return 65f;
+        if (HasRun(unique, 5, 5))
+            return 40f + 5 * 5f;  // 65
         return 0f;
     }
 
-    // 스몰스트레이트(4연속): 56 + 최고값 × 0.5
+    // 스몰 스트레이트: 4연속 (1-4=58 … 5-8=60), top 높을수록 가점
     private float ScoreSmallStraight(int[] sorted)
     {
         HashSet<int> unique = new HashSet<int>(sorted);
-        // 높은 쪽부터 체크 (3456 → 2345 → 1234)
-        if (unique.Contains(3) && unique.Contains(4) && unique.Contains(5) && unique.Contains(6))
-            return 56f + 6 * 0.5f;  // 59
-        if (unique.Contains(2) && unique.Contains(3) && unique.Contains(4) && unique.Contains(5))
-            return 56f + 5 * 0.5f;  // 58.5
-        if (unique.Contains(1) && unique.Contains(2) && unique.Contains(3) && unique.Contains(4))
-            return 56f + 4 * 0.5f;  // 58
+        for (int top = 8; top >= 4; top--)
+            if (HasRun(unique, top, 4))
+                return 56f + top * 0.5f;
         return 0f;
     }
 
-    // 트리플: 40 + tripleVal × 2 + bigKicker × 0.3 + smallKicker × 0.1
     private float ScoreTriple(int[] counts)
     {
         int tripleVal = 0;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (counts[i] >= 3) { tripleVal = i; break; }
         if (tripleVal == 0) return 0f;
 
         List<int> kickers = new List<int>();
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
         {
             if (i == tripleVal) continue;
             for (int j = 0; j < counts[i]; j++)
@@ -884,11 +372,10 @@ public class GameFlow : MonoBehaviour
         return 40f + tripleVal * 2f + bigKicker * 0.3f + smallKicker * 0.1f;
     }
 
-    // 투페어: 25 + bigPair × 2 + smallPair × 0.3 + kicker × 0.1
     private float ScoreTwoPair(int[] counts)
     {
         List<int> pairs = new List<int>();
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (counts[i] >= 2) pairs.Add(i);
 
         if (pairs.Count < 2) return 0f;
@@ -900,24 +387,23 @@ public class GameFlow : MonoBehaviour
         int[] tempCounts = (int[])counts.Clone();
         tempCounts[bigPair] -= 2;
         tempCounts[smallPair] -= 2;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (tempCounts[i] > 0) { kicker = i; break; }
 
         return 25f + bigPair * 2f + smallPair * 0.3f + kicker * 0.1f;
     }
 
-    // 원페어: 10 + pairVal × 2 + bigKicker × 0.5 + midKicker × 0.2 + smallKicker × 0.1
     private float ScoreOnePair(int[] counts)
     {
         int pairVal = 0;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             if (counts[i] >= 2) { pairVal = i; break; }
         if (pairVal == 0) return 0f;
 
         List<int> kickers = new List<int>();
         int[] tempCounts = (int[])counts.Clone();
         tempCounts[pairVal] -= 2;
-        for (int i = 6; i >= 1; i--)
+        for (int i = 8; i >= 1; i--)
             for (int j = 0; j < tempCounts[i]; j++)
                 kickers.Add(i);
 
@@ -928,7 +414,6 @@ public class GameFlow : MonoBehaviour
         return 10f + pairVal * 2f + bigKicker * 0.5f + midKicker * 0.2f + smallKicker * 0.1f;
     }
 
-    // 하이카드: biggest × 2 + second × 0.8 + third × 0.3 + fourth × 0.1
     private float ScoreHighCard(int[] sorted)
     {
         if (sorted.Length == 0) return 0f;

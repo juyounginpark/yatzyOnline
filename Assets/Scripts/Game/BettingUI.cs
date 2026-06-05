@@ -37,6 +37,13 @@ public class BettingUI : MonoBehaviour
     [Tooltip("상대 액션 메시지 표시 (예: '상대 벳 100') (선택)")]
     public TMP_Text statusText;
 
+    [Header("─ 샷클락 표시 (선택) ─")]
+    [Tooltip("남은 시간 게이지 (0~1로 채워짐)")]
+    public Slider timerBar;
+
+    [Tooltip("남은 초 텍스트")]
+    public TMP_Text timerText;
+
     [Tooltip("슬라이더 눈금 단위 (이 배수로 스냅)")]
     public int sizeStep = 50;
 
@@ -118,6 +125,29 @@ public class BettingUI : MonoBehaviour
     public void Hide()
     {
         if (root != null) root.SetActive(false);
+        HideTimer();
+    }
+
+    /// <summary>샷클락 남은 시간 표시 (remaining/total). </summary>
+    public void SetTimer(float remaining, float total)
+    {
+        float r = Mathf.Max(0f, remaining);
+        if (timerBar != null)
+        {
+            if (!timerBar.gameObject.activeSelf) timerBar.gameObject.SetActive(true);
+            timerBar.value = total > 0f ? Mathf.Clamp01(r / total) : 0f;
+        }
+        if (timerText != null)
+        {
+            if (!timerText.gameObject.activeSelf) timerText.gameObject.SetActive(true);
+            timerText.text = Mathf.CeilToInt(r).ToString();
+        }
+    }
+
+    public void HideTimer()
+    {
+        if (timerBar != null)  timerBar.gameObject.SetActive(false);
+        if (timerText != null) timerText.gameObject.SetActive(false);
     }
 
     /// <summary>상대 액션 등 메시지 표시 (패널 표시 여부와 무관하게 갱신).</summary>

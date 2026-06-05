@@ -24,6 +24,7 @@ public class RoundDirector : MonoBehaviour
     public BettingUI  bettingUI;
     public BettingAI  bettingAI;
     public ResultUI   resultUI;
+    public Shuffle    shuffle;
 
     [Header("─ 홀카드 슬롯 (비우면 손패로 바로 분배하는 폴백) ─")]
     [Tooltip("플레이어 홀카드가 뒷면으로 놓일 슬롯 (좌클릭하면 앞면으로 손패에 들어감)")]
@@ -56,6 +57,14 @@ public class RoundDirector : MonoBehaviour
     public int roundsPerDeck = 5;
 
     [Header("─ 연출 ─")]
+    [Header("─ 샷클락 (제한시간) ─")]
+    [Tooltip("켜면 플레이어 결정에 제한시간 — 끝나면 자동 처리(콜 상황=폴드, 아니면 체크)")]
+    public bool enableShotClock = true;
+
+    [Tooltip("결정 제한시간(초)")]
+    public float shotClockSeconds = 30f;
+
+    [Header("─ AI ─")]
     [Tooltip("AI 액션 전 '생각하는' 대기 시간(초)")]
     public float aiThinkTime = 0.6f;
 
@@ -112,6 +121,7 @@ public class RoundDirector : MonoBehaviour
         if (bettingUI == null)  bettingUI = FindObjectOfType<BettingUI>();
         if (bettingAI == null)  bettingAI = FindObjectOfType<BettingAI>();
         if (resultUI == null)   resultUI = FindObjectOfType<ResultUI>();
+        if (shuffle == null)    shuffle = FindObjectOfType<Shuffle>();
 
         if (bettingUI != null) bettingUI.OnAction += OnPlayerAction;
 
@@ -204,6 +214,10 @@ public class RoundDirector : MonoBehaviour
 
         bool cycleReset = (_roundIndex % Mathf.Max(1, roundsPerDeck) == 0);
         bool holeMode = UseHoleSlots();
+
+        // 게임 시작(라운드0) + 덱 초기화(5라운드 주기) 때 셔플 연출
+        if (cycleReset && shuffle != null)
+            yield return StartCoroutine(shuffle.PlayAndWait());
 
         System.Collections.Generic.List<Deck.CardPool> playerHole = null, oppHole = null;
 
@@ -411,7 +425,10 @@ public class RoundDirector : MonoBehaviour
 
         if (isPlayer)
         {
-            // 플레이어가 뒷면 커뮤니티 슬롯을 클릭할 때까지 대기
+            // 플레이어가 뒷면 커뮤니티 슬롯을 클릭 (제한시간 끝나면 자동으로 한 장)
+            if (enableShotClock && SoundManager.Instance != null) SoundManager.Instance.StartClock();
+            float t = shotClockSeconds;
+
             while (true)
             {
                 if (Input.GetMouseButtonDown(0))
@@ -419,7 +436,20 @@ public class RoundDirector : MonoBehaviour
                     Slot s = HitHiddenCommunitySlot();
                     if (s != null)
                     {
+                        if (SoundManager.Instance != null) SoundManager.Instance.StopClock();
                         yield return StartCoroutine(randomSlot.RevealSlot(s));
+                        yield break;
+                    }
+                }
+
+                if (enableShotClock && shotClockSeconds > 0f)
+                {
+                    t -= Time.deltaTime;
+                    if (t <= 0f)
+                    {
+                        if (SoundManager.Instance != null) SoundManager.Instance.StopClock();
+                        Slot s = RandomHiddenCommunitySlot();
+                        if (s != null) yield return StartCoroutine(randomSlot.RevealSlot(s));
                         yield break;
                     }
                 }
@@ -607,7 +637,33 @@ public class RoundDirector : MonoBehaviour
         {
             _hasPending = false;
             if (bettingUI != null) bettingUI.Show(toCall, stack, Mathf.CeilToInt(pot != null ? pot.Amount : 0));
-            yield return new WaitUntil(() => _hasPending);
+
+            if (enableShotClock && shotClockSeconds > 0f)
+            {
+                if (SoundManager.Instance != null) SoundManager.Instance.StartClock();
+
+                float t = shotClockSeconds;
+                while (!_hasPending && t > 0f)
+                {
+                    t -= Time.deltaTime;
+                    if (bettingUI != null) bettingUI.SetTimer(t, shotClockSeconds);
+                    yield return null;
+                }
+
+                if (SoundManager.Instance != null) SoundManager.Instance.StopClock();
+
+                if (!_hasPending)
+                {
+                    // 시간 초과 → 콜 금액 있으면 폴드, 없으면 체크
+                    _pendingAction = toCall > 0 ? BetAction.Fold : BetAction.Check;
+                    _pendingAmount = 0;
+                    if (bettingUI != null) bettingUI.Hide();
+                }
+            }
+            else
+            {
+                yield return new WaitUntil(() => _hasPending);
+            }
             // _pendingAction/_pendingAmount 채워짐
         }
         else
